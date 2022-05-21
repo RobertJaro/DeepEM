@@ -62,8 +62,8 @@ class DeepEM:
     def compute(self, image, return_reconstruction=False):
         with torch.no_grad():
             image = torch.tensor(image, dtype=torch.float32).to(self.device)
-            image = image[None]  # expand batch dimension
-            reconstruction, log_dem = self.model(image.cuda())
+            image = image[None,]  # expand batch dimension
+            reconstruction, log_dem = self.model(image)
             reconstruction = reconstruction.cpu().detach().numpy()[0]
             log_dem = log_dem.detach().cpu().numpy()[0]
             if return_reconstruction:

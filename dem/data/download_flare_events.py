@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 import shutil
 from datetime import datetime, timedelta
 
@@ -15,7 +16,6 @@ args = parser.parse_args()
 
 download_dir = args.download_dir
 flare_list = pd.read_csv(args.flare_list, parse_dates=['start_time', 'end_time'])
-flare_list = flare_list.iloc[3::5]
 wls = ['94', '131', '171', '193', '211', '335']
 [os.makedirs(os.path.join(download_dir, wl), exist_ok=True) for wl in wls]
 
@@ -23,8 +23,9 @@ client = drms.Client(email=args.email, verbose=True)
 for i, flare in flare_list.iterrows():
   start_date = flare['start_time'].to_pydatetime()
   end_date = flare['end_time'].to_pydatetime()
-  duration = (end_date - start_date) // timedelta(minutes=1)
-  r = client.export('aia.lev1_euv_12s[%s/%dm@10m][%s]{image}' % (start_date.isoformat('T'), duration, ','.join(wls) ))
+  flare_dates = [start_date + i * timedelta(minutes=1) for i in range((end_date - start_date) // timedelta(minutes=1))]
+  date = random.sample(flare_dates, 1)[0]
+  r = client.export('aia.lev1_euv_12s[%s][%s]{image}' % (date.isoformat('T'), ','.join(wls) ))
   r.wait()
 
   downloaded_files = r.download(download_dir)

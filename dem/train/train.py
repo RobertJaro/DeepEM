@@ -13,7 +13,7 @@ from dem.train.generator import DEMDataset, sdo_norms
 from dem.train.model import DeepEMModel
 
 import torch
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader
 
 from matplotlib import pyplot as plt
 import pandas as pd
@@ -22,9 +22,6 @@ import numpy as np
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--config', type=str, required=True,
-                    help='config file for the simulation')
-parser.add_argument('--num_workers', type=int, required=False, default=4)
 parser.add_argument('--base_dir', type=str, required=True)
 parser.add_argument('--temperature_response', type=str, required=True)
 parser.add_argument('--data_path', type=str, required=True)
@@ -59,7 +56,7 @@ temperature_response = temperature_response[:, 1:]
 temperature_response = np.delete(temperature_response, 5, 1)  # remove 304
 k = torch.from_numpy(temperature_response).float()
 
-l_editor = LambdaEditor(lambda d: np.clip(d, a_min=-1, a_max=None, dtype=np.float32))
+l_editor = LambdaEditor(lambda d: np.clip(d, a_min=-1, a_max=10, dtype=np.float32))
 patch_editor = BrightestPixelPatchEditor((256, 256), random_selection=0.5)
 
 sdo_train_dataset = DEMDataset(sdo_path, patch_shape=(1024, 1024), resolution=4096, months=list(range(11)))
@@ -77,12 +74,12 @@ model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=5e-5)
 
 #
-sdo_train_loader = DataLoader(sdo_train_dataset, batch_size=6, num_workers=4, sampler=RandomSampler(sdo_train_dataset, replacement=True, num_samples=160))
-sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=12, shuffle=True, num_workers=4)
+sdo_train_loader = DataLoader(sdo_train_dataset, batch_size=6, num_workers=4, shuffle=True)
+sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=12, num_workers=4)
 
 sdo_plot_dataset = DEMDataset(sdo_path, patch_shape=(1024, 1024), resolution=4096, months=[11, 12], n_samples=8)
 sdo_plot_dataset = StorageDataset(sdo_plot_dataset, sdo_converted_path, ext_editors=[patch_editor, l_editor])
-plot_callback = PlotCallback(sdo_plot_dataset, model, prediction_dir)
+plot_callback = PlotCallback(sdo_plot_dataset, model, prediction_dir, device)
 plot_callback(-1)
 
 start_epoch = 0

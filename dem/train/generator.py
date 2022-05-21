@@ -32,7 +32,7 @@ class LinearAIADataset(BaseDataset):
                    MapToDataEditor(),
                    NormalizeEditor(norm),
                    ReshapeEditor((1, resolution, resolution)),
-                   LambdaEditor(lambda d: np.clip(d, a_min=-1, a_max=None, dtype=np.float32))]
+                   LambdaEditor(lambda d, **_: np.clip(d, a_min=-1, a_max=None, dtype=np.float32))]
         super().__init__(data, editors=editors, ext=ext, **kwargs)
 
 

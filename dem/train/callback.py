@@ -12,10 +12,11 @@ sdo_cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211
 
 class PlotCallback():
 
-    def __init__(self, data_set, model, prediction_path):
+    def __init__(self, data_set, model, prediction_path, device):
         self.data_set = data_set
         self.model = model
         self.prediction_path = prediction_path
+        self.device = device
 
     def __call__(self, epoch):
         loader = DataLoader(self.data_set, batch_size=4, shuffle=False, num_workers=8)
@@ -24,7 +25,7 @@ class PlotCallback():
         dems = []
         with torch.no_grad():
             for image in loader:
-                reconstruction, log_dem = self.model(image.cuda())
+                reconstruction, log_dem = self.model(image.to(self.device))
                 images.append(image.detach().cpu().numpy())
                 reconstructions.append(reconstruction.detach().cpu().numpy())
                 dems.append(log_dem.detach().cpu().numpy())

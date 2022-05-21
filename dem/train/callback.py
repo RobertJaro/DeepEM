@@ -34,7 +34,7 @@ class PlotCallback():
         n_rows = images.shape[0]
         n_dem_maps = 15
         n_columns = images.shape[1] + reconstructions.shape[1] + n_dem_maps
-        fig, axs = plt.subplots(n_rows, n_columns, figsize=(2 * n_columns, 2 * n_rows))
+        fig, axs = plt.subplots(n_rows, n_columns, figsize=(n_columns, n_rows))
         [ax.set_axis_off() for ax in np.ravel(axs)]
         for row, img, rec, dem in zip(axs, images, reconstructions, dems):
             for ax, c_img, cmap in zip(row[:img.shape[0]], img, sdo_cmaps):

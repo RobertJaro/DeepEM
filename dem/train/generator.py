@@ -1,4 +1,6 @@
 import numpy as np
+from astropy.coordinates import SkyCoord
+from astropy import units as u
 from astropy.visualization import ImageNormalize, LinearStretch
 from iti.data.dataset import StackDataset, get_intersecting_files, BaseDataset
 from iti.data.editor import BrightestPixelPatchEditor, LoadMapEditor, NormalizeRadiusEditor, AIAPrepEditor, \
@@ -32,7 +34,7 @@ class LinearAIADataset(BaseDataset):
                    MapToDataEditor(),
                    NormalizeEditor(norm),
                    ReshapeEditor((1, resolution, resolution)),
-                   LambdaEditor(lambda d, **_: np.clip(d, a_min=-1, a_max=None, dtype=np.float32))]
+                   LambdaEditor(lambda d, **_: np.clip(d, a_min=-1, a_max=10, dtype=np.float32))]
         super().__init__(data, editors=editors, ext=ext, **kwargs)
 
 
@@ -54,7 +56,8 @@ class DEMDataset(StackDataset):
         if patch_shape is not None:
             self.addEditor(BrightestPixelPatchEditor(patch_shape, random_selection=0))
 
-def prep_map(s_map, resolution=4096, recenter=False):
+def prep_map(s_map, recenter=False):
+    resolution = 4096
     norm = sdo_norms[int(s_map.wavelength.value)]
     aia_prep_editor = AIAPrepEditor()
 
@@ -64,9 +67,19 @@ def prep_map(s_map, resolution=4096, recenter=False):
     scale_factor = resolution / (2 * r_obs_pix.value)
     s_map = Map(np.nan_to_num(s_map.data).astype(np.float32), s_map.meta)
     s_map = s_map.rotate(recenter=recenter, scale=scale_factor, missing=0, order=4)
+    if recenter:
+        arcs_frame = (resolution / 2) * s_map.scale[0].value
+        s_map = s_map.submap(
+            bottom_left=SkyCoord(-arcs_frame * u.arcsec, -arcs_frame * u.arcsec, frame=s_map.coordinate_frame),
+            top_right=SkyCoord(arcs_frame * u.arcsec, arcs_frame * u.arcsec, frame=s_map.coordinate_frame))
+        pad_x = s_map.data.shape[0] - resolution
+        pad_y = s_map.data.shape[1] - resolution
+        s_map = s_map.submap(bottom_left=[pad_x // 2, pad_y // 2] * u.pix,
+                             top_right=[pad_x // 2 + resolution - 1, pad_y // 2 + resolution - 1] * u.pix)
+    s_map.meta['r_sun'] = s_map.rsun_obs.value / s_map.meta['cdelt1']
 
     s_map = aia_prep_editor.call(s_map)
     data = norm(s_map.data).astype(np.float32) * 2 - 1
-    data = np.clip(data, a_min=-1, a_max=None, dtype=np.float32)
+    data = np.clip(data, a_min=-1, a_max=10, dtype=np.float32)
     s_map = Map(data, s_map.meta)
     return s_map

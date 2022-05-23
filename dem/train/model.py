@@ -105,14 +105,14 @@ class DeepEM:
                 rec_patches.append(rec_patch)
         #
         dem_patches = np.array(dem_patches)
-        dem_patches = dem_patches.reshape((img.shape[1] // dem_patches.shape[2], img.shape[2] // dem_patches.shape[3],
+        dem_patches = dem_patches.reshape((img.shape[1] // block_shape[0], img.shape[2] // block_shape[1],
                                            dem_patches.shape[1], dem_patches.shape[2], dem_patches.shape[3]))
         dem = np.moveaxis(dem_patches, [0, 1], [1, 3]).reshape((dem_patches.shape[2],
                                                                 dem_patches.shape[0] * dem_patches.shape[3],
                                                                 dem_patches.shape[1] * dem_patches.shape[4]))
         #
         rec_patches = np.array(rec_patches)
-        rec_patches = rec_patches.reshape((img.shape[1] // rec_patches.shape[2], img.shape[2] // rec_patches.shape[3],
+        rec_patches = rec_patches.reshape((img.shape[1] // block_shape[0], img.shape[2] // block_shape[1],
                                            rec_patches.shape[1], rec_patches.shape[2], rec_patches.shape[3]))
         rec = np.moveaxis(rec_patches, [0, 1], [1, 3]).reshape((rec_patches.shape[2],
                                                                 rec_patches.shape[0] * rec_patches.shape[3],

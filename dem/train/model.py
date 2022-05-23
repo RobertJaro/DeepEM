@@ -83,16 +83,16 @@ class DeepEM:
             else:
                 return log_dem
 
-    def icompute(self, files, num_workers=4, block_shape=(512, 512), return_reconstruction=False):
+    def icompute(self, files, num_workers=4, block_shape=(512, 512), **kwargs):
         dataset = DEMDataset(files)
         loader = DataLoader(dataset, batch_size=1, num_workers=num_workers)
         for image in loader:
             if block_shape:
-                yield self.compute_patches(image[0].numpy(), block_shape, return_reconstruction=return_reconstruction)
+                yield self.compute_patches(image[0].numpy(), block_shape)
             else:
-                yield self.compute(image, return_reconstruction=return_reconstruction)
+                yield self.compute(image, **kwargs)
 
-    def compute_patches(self, img, block_shape, return_reconstruction=False):
+    def compute_patches(self, img, block_shape, return_reconstruction=False, **kwargs):
         patch_shape = (img.shape[0], *block_shape)
         patches = view_as_blocks(img, patch_shape)
         patches = np.reshape(patches, (-1, *patch_shape))
@@ -100,7 +100,7 @@ class DeepEM:
         rec_patches = []
         with torch.no_grad():
             for patch in patches:
-                dem_patch, rec_patch = self.compute(patch, True)
+                dem_patch, rec_patch = self.compute(patch, True, **kwargs)
                 dem_patches.append(dem_patch)
                 rec_patches.append(rec_patch)
         #

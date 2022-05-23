@@ -1,18 +1,8 @@
 import numpy as np
-from astropy.coordinates import SkyCoord
-from astropy import units as u
 from astropy.visualization import ImageNormalize, LinearStretch
 from iti.data.dataset import StackDataset, get_intersecting_files, BaseDataset
-from iti.data.editor import BrightestPixelPatchEditor, LoadMapEditor, NormalizeRadiusEditor, AIAPrepEditor, \
-    MapToDataEditor, NormalizeEditor, ReshapeEditor, LambdaEditor
-
-# sdo_norms = {94: ImageNormalize(vmin=0, vmax=340, stretch=LinearStretch(), clip=False),
-#              131: ImageNormalize(vmin=0, vmax=1400, stretch=LinearStretch(), clip=False),
-#              171: ImageNormalize(vmin=0, vmax=8600, stretch=LinearStretch(), clip=False),
-#              193: ImageNormalize(vmin=0, vmax=9800, stretch=LinearStretch(), clip=False),
-#              211: ImageNormalize(vmin=0, vmax=5800, stretch=LinearStretch(), clip=False),
-#              335: ImageNormalize(vmin=0, vmax=600, stretch=LinearStretch(), clip=False),
-#              }
+from iti.data.editor import BrightestPixelPatchEditor, LoadMapEditor, AIAPrepEditor, \
+    MapToDataEditor, NormalizeEditor, LambdaEditor, ExpandDimsEditor
 from sunpy.map import Map
 
 sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
@@ -23,17 +13,17 @@ sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=
              335: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
              }
 
+
 class LinearAIADataset(BaseDataset):
 
-    def __init__(self, data, wavelength, resolution=4096, ext='.fits', **kwargs):
+    def __init__(self, data, wavelength, ext='.fits', **kwargs):
         norm = sdo_norms[wavelength]
 
         editors = [LoadMapEditor(),
-                   NormalizeRadiusEditor(resolution),
-                   AIAPrepEditor(),
+                   AIAPrepEditor('aiapy'),
                    MapToDataEditor(),
                    NormalizeEditor(norm),
-                   ReshapeEditor((1, resolution, resolution)),
+                   ExpandDimsEditor(),
                    LambdaEditor(lambda d, **_: np.clip(d, a_min=-1, a_max=10, dtype=np.float32))]
         super().__init__(data, editors=editors, ext=ext, **kwargs)
 
@@ -56,27 +46,10 @@ class DEMDataset(StackDataset):
         if patch_shape is not None:
             self.addEditor(BrightestPixelPatchEditor(patch_shape, random_selection=0))
 
-def prep_map(s_map, recenter=False):
-    resolution = 4096
+
+def prep_map(s_map):
     norm = sdo_norms[int(s_map.wavelength.value)]
     aia_prep_editor = AIAPrepEditor()
-
-    # adjust scale
-    r_obs_pix = s_map.rsun_obs / s_map.scale[0]  # normalize solar radius
-    r_obs_pix = 1.1 * r_obs_pix
-    scale_factor = resolution / (2 * r_obs_pix.value)
-    s_map = Map(np.nan_to_num(s_map.data).astype(np.float32), s_map.meta)
-    s_map = s_map.rotate(recenter=recenter, scale=scale_factor, missing=0, order=4)
-    if recenter:
-        arcs_frame = (resolution / 2) * s_map.scale[0].value
-        s_map = s_map.submap(
-            bottom_left=SkyCoord(-arcs_frame * u.arcsec, -arcs_frame * u.arcsec, frame=s_map.coordinate_frame),
-            top_right=SkyCoord(arcs_frame * u.arcsec, arcs_frame * u.arcsec, frame=s_map.coordinate_frame))
-        pad_x = s_map.data.shape[0] - resolution
-        pad_y = s_map.data.shape[1] - resolution
-        s_map = s_map.submap(bottom_left=[pad_x // 2, pad_y // 2] * u.pix,
-                             top_right=[pad_x // 2 + resolution - 1, pad_y // 2 + resolution - 1] * u.pix)
-    s_map.meta['r_sun'] = s_map.rsun_obs.value / s_map.meta['cdelt1']
 
     s_map = aia_prep_editor.call(s_map)
     data = norm(s_map.data).astype(np.float32) * 2 - 1

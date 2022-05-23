@@ -4,6 +4,7 @@ from urllib import request
 
 import numpy as np
 import torch
+from astropy.nddata import block_reduce
 from skimage.util import view_as_blocks
 from torch import nn
 from torch.utils.data import DataLoader
@@ -58,14 +59,25 @@ class DeepEM:
         self.model = torch.load(model_path, map_location=device) if model_path else \
             torch.load(self._get_model_path(model_name), map_location=device)
         self.device = device
+        self.log_T = np.linspace(4, 9, 101)
 
-    def compute(self, image, return_reconstruction=False):
+    def compute(self, image, return_reconstruction=False, bin=None, temperature_range=None):
         with torch.no_grad():
             image = torch.tensor(image, dtype=torch.float32).to(self.device)
             image = image[None,]  # expand batch dimension
             reconstruction, log_dem = self.model(image)
             reconstruction = reconstruction.cpu().detach().numpy()[0]
             log_dem = log_dem.detach().cpu().numpy()[0]
+            if bin:
+                log_dem = block_reduce(log_dem, bin)
+                reconstruction = block_reduce(reconstruction, bin)
+            if temperature_range:
+                cond = np.ones_like(self.log_T, dtype=np.bool)
+                if temperature_range[0] is not None:
+                    cond = cond & (self.log_T >= temperature_range[0])
+                if temperature_range[1] is not None:
+                    cond = cond & (self.log_T <= temperature_range[1])
+                log_dem = log_dem[cond]
             if return_reconstruction:
                 return log_dem, reconstruction
             else:

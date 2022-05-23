@@ -54,12 +54,17 @@ class DEMDataset(StackDataset):
         if patch_shape is not None:
             self.addEditor(BrightestPixelPatchEditor(patch_shape, random_selection=0))
 
-def prep_map(s_map, resolution=4096):
+def prep_map(s_map, resolution=4096, recenter=False):
     norm = sdo_norms[int(s_map.wavelength.value)]
-    radius_editor = NormalizeRadiusEditor(resolution)
     aia_prep_editor = AIAPrepEditor()
 
-    s_map = radius_editor.call(s_map)
+    # adjust scale
+    r_obs_pix = s_map.rsun_obs / s_map.scale[0]  # normalize solar radius
+    r_obs_pix = 1.1 * r_obs_pix
+    scale_factor = resolution / (2 * r_obs_pix.value)
+    s_map = Map(np.nan_to_num(s_map.data).astype(np.float32), s_map.meta)
+    s_map = s_map.rotate(recenter=recenter, scale=scale_factor, missing=0, order=4)
+
     s_map = aia_prep_editor.call(s_map)
     data = norm(s_map.data).astype(np.float32) * 2 - 1
     data = np.clip(data, a_min=-1, a_max=None, dtype=np.float32)

@@ -88,7 +88,7 @@ class DeepEM:
         loader = DataLoader(dataset, batch_size=1, num_workers=num_workers)
         for image in loader:
             if block_shape:
-                yield self.compute_patches(image[0].numpy(), block_shape)
+                yield self.compute_patches(image[0].numpy(), block_shape, **kwargs)
             else:
                 yield self.compute(image, **kwargs)
 

@@ -49,7 +49,7 @@ class DEMDataset(StackDataset):
 
 def prep_map(s_map):
     norm = sdo_norms[int(s_map.wavelength.value)]
-    aia_prep_editor = AIAPrepEditor('aiapy')
+    aia_prep_editor = AIAPrepEditor()
 
     s_map = aia_prep_editor.call(s_map)
     data = norm(s_map.data).astype(np.float32) * 2 - 1

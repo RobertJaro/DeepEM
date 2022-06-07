@@ -21,27 +21,21 @@ class DeepEMModel(nn.Module):
         self.register_buffer("normalization", normalization)
         self.register_buffer("d_logT", torch.tensor(0.05, dtype=torch.float32))
         #
-        self.conv1 = nn.Conv2d(channels, 128, 3, padding=1, padding_mode='reflect')
-        self.conv2 = nn.Conv2d(128, 256, 3, padding=1, padding_mode='reflect')
-        self.conv3 = nn.Conv2d(256, 512, 3, padding=1, padding_mode='reflect')
-        self.conv4 = nn.Conv2d(512, 256, 3, padding=1, padding_mode='reflect')
-        self.conv5 = nn.Conv2d(256, 128, 3, padding=1, padding_mode='reflect')
-        self.conv6 = nn.Conv2d(128, t_bins, 3, padding=1, padding_mode='reflect')
+        convs = []
+        convs += [nn.Conv2d(channels, 128, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(128, 256, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(256, 512, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(512, 1024, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(1024, 1024, 3, padding=1, padding_mode='reflect')]
+        self.convs = nn.ModuleList(convs)
+        self.out = nn.Conv2d(1024, t_bins, 3, padding=1, padding_mode='reflect')
         #
 
     def forward(self, x):
         # transform to DEM
-        x = self.conv1(x)
-        x = torch.relu(x)
-        x = self.conv2(x)
-        x = torch.relu(x)
-        x = self.conv3(x)
-        x = torch.relu(x)
-        x = self.conv4(x)
-        x = torch.relu(x)
-        x = self.conv5(x)
-        x = torch.relu(x)
-        x = self.conv6(x)
+        for conv in self.convs:
+            x = torch.relu(conv(x))
+        x = self.out(x)
         #
         log_dem = x + 28  # scale to approx [26, 29]
         dem = 10 ** log_dem  # compute dem(log T)

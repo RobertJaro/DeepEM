@@ -30,17 +30,17 @@ class LinearAIADataset(BaseDataset):
 
 class DEMDataset(StackDataset):
 
-    def __init__(self, data, patch_shape=None, resolution=4096, ext='.fits', **kwargs):
+    def __init__(self, data, patch_shape=None, ext='.fits', **kwargs):
         if isinstance(data, list):
             paths = data
         else:
             paths = get_intersecting_files(data, ['94', '131', '171', '193', '211', '335'], ext=ext, **kwargs)
-        data_sets = [LinearAIADataset(paths[0], 94, resolution=resolution),
-                     LinearAIADataset(paths[1], 131, resolution=resolution),
-                     LinearAIADataset(paths[2], 171, resolution=resolution),
-                     LinearAIADataset(paths[3], 193, resolution=resolution),
-                     LinearAIADataset(paths[4], 211, resolution=resolution),
-                     LinearAIADataset(paths[5], 335, resolution=resolution)
+        data_sets = [LinearAIADataset(paths[0], 94),
+                     LinearAIADataset(paths[1], 131),
+                     LinearAIADataset(paths[2], 171),
+                     LinearAIADataset(paths[3], 193),
+                     LinearAIADataset(paths[4], 211),
+                     LinearAIADataset(paths[5], 335)
                      ]
         super().__init__(data_sets, **kwargs)
         if patch_shape is not None:
@@ -49,7 +49,7 @@ class DEMDataset(StackDataset):
 
 def prep_map(s_map):
     norm = sdo_norms[int(s_map.wavelength.value)]
-    aia_prep_editor = AIAPrepEditor()
+    aia_prep_editor = AIAPrepEditor('aiapy')
 
     s_map = aia_prep_editor.call(s_map)
     data = norm(s_map.data).astype(np.float32) * 2 - 1

@@ -61,7 +61,7 @@ channel_response = temperature_response[:, 1:]
 channel_response = np.delete(channel_response, 5, 1)  # remove 304
 k = torch.from_numpy(channel_response).float()
 
-log_T = torch.tensor(temperature_response[:, 0], dtype=torch.float32).to(device)
+temperatures = 10 ** torch.tensor(temperature_response[:, 0], dtype=torch.float32).to(device)
 
 l_editor = LambdaEditor(lambda d: np.clip(d, a_min=-1, a_max=10, dtype=np.float32))
 train_patch_editor = BrightestPixelPatchEditor((128, 128), random_selection=0.5)
@@ -74,16 +74,16 @@ sdo_valid_dataset = DEMDataset(sdo_path, patch_shape=(1024, 1024), months=[11, 1
 sdo_valid_dataset = StorageDataset(sdo_valid_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
 
 normalization = torch.from_numpy(np.array([norm.vmax for norm in sdo_norms.values()])).float()
-zero_weighting = (-k.sum(1)).to(device)
+zero_weighting = -k.sum(1).to(device)
 zero_weighting = (zero_weighting - zero_weighting.min()) / (zero_weighting.max() - zero_weighting.min())
-# zero_weighting = 10 ** zero_weighting
 # plot weighting
 plt.figure(figsize=(4, 2))
-plt.plot(np.arange(4, 9.01, 0.05), zero_weighting.cpu())
+plt.plot(10 ** np.arange(4, 9.01, 0.05), zero_weighting.cpu())
+plt.xlim(0, 25e6)
 plt.savefig(os.path.join(prediction_dir, 'zero_weighting.jpg'))
 plt.close()
 # Init Model
-model = DeepEMModel(channel_response.shape[1], 10, k, normalization)
+model = DeepEMModel(channel_response.shape[1], 10, temperature_response[:, 0], k, normalization)
 logging.info('Model Size: %.03f M' % (sum(p.numel() for p in model.parameters()) / 1e6))
 parallel_model = nn.DataParallel(model)
 parallel_model.to(device)
@@ -96,7 +96,7 @@ sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=batch_size, num_work
 
 sdo_plot_dataset = DEMDataset(sdo_path, patch_shape=(1024, 1024), months=[11, 12], n_samples=8)
 sdo_plot_dataset = StorageDataset(sdo_plot_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
-plot_callback = PlotCallback(sdo_plot_dataset, parallel_model, log_T, prediction_dir, saturation_limit, device)
+plot_callback = PlotCallback(sdo_plot_dataset, parallel_model, prediction_dir, saturation_limit, device)
 
 
 start_epoch = 0
@@ -107,10 +107,11 @@ if os.path.exists(checkpoint_path):
     optimizer.load_state_dict(state_dict['o'])
     start_epoch = state_dict['epoch'] + 1
     history = state_dict['history']
+
 # history = {'epoch': [], 'train_loss': [], 'valid_loss': [], 'so_reg':[], 'zo_reg':[]}
 plot_callback(-1)
 # Start training
-epochs = 2000
+epochs = int(1e6)
 
 channel_weighting = torch.tensor([5, 1, 0.5, 0.5, 0.5, 5], dtype=torch.float32).view(1, 6, 1, 1).to(device)
 stretch_div = torch.arcsinh(torch.tensor(1 / 0.01))
@@ -144,15 +145,16 @@ for epoch in range(start_epoch, epochs):
     for iteration, sdo_image in enumerate(tqdm(sdo_train_loader, desc='Train')):
         sdo_image = sdo_image.to(device)
         optimizer.zero_grad()
-        reconstructed_image, log_dem = parallel_model(sdo_image, log_T)
-
+        reconstructed_image, log_dem = parallel_model(sdo_image)
         n_dem = 10 ** (log_dem - 20)
-        loss = weigted_mse(reconstructed_image, sdo_image)
-        # spacing = [temp]
-        second_order_regularization = torch.gradient(torch.gradient(log_dem, dim=1)[0], dim=1)[0].pow(2).mean()
-        zeroth_order_regularization = torch.sum(n_dem ** 2 * zero_weighting[None, :, None, None], dim=1).pow(0.5).mean()
 
-        total_loss = loss + second_order_regularization * lambda_so + zeroth_order_regularization * lambda_zo
+        loss = weigted_mse(reconstructed_image, sdo_image)
+        spacing = [temperatures]
+        second_order_regularization = torch.gradient(torch.gradient(log_dem, dim=1, spacing=spacing)[0], dim=1, spacing=spacing)[0].pow(2).mean()
+        clipped_dem = torch.clip(log_dem, min=0)
+        zeroth_order_regularization = torch.sum(clipped_dem ** 2 * zero_weighting[None, :, None, None], dim=1).pow(0.5).mean()
+
+        total_loss = loss + zeroth_order_regularization * lambda_zo
         assert not torch.isnan(total_loss)
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(parallel_model.parameters(), 0.1)
@@ -160,13 +162,14 @@ for epoch in range(start_epoch, epochs):
         train_loss.append(loss.detach().cpu().numpy())
         so_reg.append(second_order_regularization.detach().cpu().numpy())
         zo_reg.append(zeroth_order_regularization.detach().cpu().numpy())
+    #
     valid_loss = []
     valid_percentage = []
     parallel_model.eval()
     with torch.no_grad():
         for sdo_image in tqdm(sdo_valid_loader, desc='Valid'):
             sdo_image = sdo_image.float().to(device)
-            reconstructed_image, log_dem = parallel_model(sdo_image, log_T)
+            reconstructed_image, log_dem = parallel_model(sdo_image)
             loss = weigted_mse(reconstructed_image, sdo_image)
             percentage = percentage_diff(reconstructed_image, sdo_image)
             valid_loss.append(loss.detach().cpu().numpy())

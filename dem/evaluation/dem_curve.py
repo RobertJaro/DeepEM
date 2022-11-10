@@ -14,7 +14,7 @@ from dem.train.callback import sdo_cmaps
 from dem.train.generator import prep_map, DEMDataset
 from dem.train.model import DeepEM
 
-base_path = '/gpfs/gpfs0/robert.jarolim/dem/version2'
+base_path = '/gpfs/gpfs0/robert.jarolim/dem/version9'
 data_dir = '/gpfs/gpfs0/robert.jarolim/data/dem'
 evaluation_path = os.path.join(base_path, 'evaluation')
 os.makedirs(evaluation_path, exist_ok=True)

@@ -14,49 +14,48 @@ from dem.train.generator import DEMDataset
 
 class DeepEMModel(nn.Module):
 
-    def __init__(self, channels, n_normal, k, normalization):
+    def __init__(self, channels, n_normal, log_T, k, normalization):
         super().__init__()
         #
         self.register_buffer("k", k)
         self.register_buffer("normalization", normalization)
         self.register_buffer("d_logT", torch.tensor(0.05, dtype=torch.float32))
+        self.register_buffer("logT", torch.tensor(log_T, dtype=torch.float32))
         #
         convs = []
-        convs += [nn.Conv2d(channels, 256, 3, padding=1, padding_mode='reflect')]
-        # convs += [nn.Conv2d(128, 256, 3, padding=1, padding_mode='reflect')]
-        # convs += [nn.Conv2d(256, 512, 3, padding=1, padding_mode='reflect')]
-        # convs += [nn.Conv2d(512, 1024, 3, padding=1, padding_mode='reflect')]
-        convs += [nn.Conv2d(256, 256, 3, padding=1, padding_mode='reflect')]
-        convs += [nn.Conv2d(256, 256, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(channels, 128, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(128, 256, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(256, 512, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(512, 1024, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(1024, 1024, 3, padding=1, padding_mode='reflect')]
+        convs += [nn.Conv2d(1024, 1024, 3, padding=1, padding_mode='reflect')]
         self.convs = nn.ModuleList(convs)
-        self.out = nn.Conv2d(256, n_normal * 3, 3, padding=1, padding_mode='reflect')
-        self.out_mag = nn.Conv2d(256, 1, 3, padding=1, padding_mode='reflect')
-        self.out_mag.bias.data.uniform_(10, 20)
+        self.out = nn.Conv2d(1024, n_normal * 3, 3, padding=1, padding_mode='reflect')
         #
         self.out_act = nn.Softplus()
 
-    def forward(self, x, log_T):
+    def forward(self, x):
         # transform to DEM
         for conv in self.convs:
             x = torch.sin(conv(x))
-        mag = self.out_mag(x)
         x = self.out(x)
         x = x.view(x.shape[0], -1, 3, *x.shape[2:])
         std = self.out_act(x[:, :, 0, None, :, :]) # (batch, n_normal, T_bins, w, h)
-        mean = torch.sigmoid(x[:, :, 1, None, :, :]) * log_T.max() #torch.clamp(x[:, :, 1, None, :, :], min=log_T.min(), max=log_T.max())
+        mean = torch.sigmoid(x[:, :, 1, None, :, :]) * (self.logT.max() - self.logT.min()) + self.logT.min()
         w = self.out_act(x[:, :, 2, None, :, :])
-        log_T = log_T[None, None, :, None, None] # (batch, n_normal, T_bins, w, h)
-        normal = w * (std * np.sqrt(2 * np.pi) + 1e-8) ** -1 * torch.exp(-0.5 * (log_T - mean) ** 2 / (std ** 2 + 1e-8))
-        log_dem = normal.sum(1) + mag
+        logT = self.logT[None, None, :, None, None] # (batch, n_normal, T_bins, w, h)
+        normal = w * (std * np.sqrt(2 * np.pi) + 1e-8) ** -1 * torch.exp(-0.5 * (logT - mean) ** 2 / (std ** 2 + 1e-8))
+        log_dem = normal.sum(1)
         dem = 10 ** log_dem
-        print(mean.min(), mean.max())
-        print(std.min(), std.max())
-        print(w.min(), w.max())
-        print(dem.min(), dem.max())
+        # print('mean', mean.min(), mean.max(), mean.mean())
+        # print('std', std.min(), std.max())
+        # print('weight', w.min(), w.max())
+        # print('mag', mag.min(), mag.max())
+        # print('dem', dem.min(), dem.max())
         #
         # log_dem = x + 28  # scale to approx [26, 29]
         # dem = 10 ** log_dem  # compute dem(log T)
-        y = torch.einsum('ijkl,jm->imkl', dem, self.k) * self.d_logT  # DN / s / px
+        y = torch.einsum('ijkl,jm->imkl', dem, self.k * 1e26) * self.d_logT  # 1e26 DN / s / px
         aia_normalized = y / self.normalization[None, :, None, None]  # scale to [0, 1]
         aia_normalized = (aia_normalized * 2) - 1  # scale [-1, 1]
         #

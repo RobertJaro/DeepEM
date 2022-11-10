@@ -13,13 +13,12 @@ sdo_cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211
 
 class PlotCallback():
 
-    def __init__(self, data_set, model, log_T, prediction_path, saturation_limit, device):
+    def __init__(self, data_set, model, prediction_path, saturation_limit, device):
         self.data_set = data_set
         self.model = model
         self.prediction_path = prediction_path
         self.device = device
         self.temperatures = np.arange(4, 9.01, 0.05)
-        self.log_T = log_T.to(self.device)
         self.saturation_limit = saturation_limit
 
     def __call__(self, epoch):
@@ -29,7 +28,7 @@ class PlotCallback():
         log_dems = []
         with torch.no_grad():
             for image in loader:
-                reconstruction, log_dem = self.model(image.to(self.device), self.log_T)
+                reconstruction, log_dem = self.model(image.to(self.device))
                 images.append(image.detach().cpu().numpy())
                 reconstructions.append(reconstruction.detach().cpu().numpy())
                 log_dems.append(log_dem.detach().cpu().numpy())
@@ -56,7 +55,7 @@ class PlotCallback():
                 ax.imshow(c_dem)
             row = row[n_dem_maps:]
             # row[0].plot(self.temperatures, (10 ** log_dem).sum(axis=(1, 2)))
-            row[0].plot(10 ** self.temperatures, np.log10((10 ** log_dem).mean(axis=(1, 2))))
+            row[0].plot(10 ** self.temperatures, (10 ** log_dem).mean(axis=(1, 2)))
             row[0].set_xlim(0, 25e6)
             row[0].set_axis_on()
             row[0].tick_params(direction="in")

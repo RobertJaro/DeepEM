@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+from datetime import datetime
 
 from iti.data.dataset import StorageDataset
 from iti.data.editor import BrightestPixelPatchEditor, LambdaEditor
@@ -27,7 +28,6 @@ parser.add_argument('--temperature_response', type=str, required=True)
 parser.add_argument('--data_path', type=str, required=True)
 parser.add_argument('--converted_path', type=str, required=True)
 parser.add_argument('--lambda_zo', type=float, required=True, default=1e-4)
-parser.add_argument('--lambda_so', type=float, required=True, default=1e-2)
 args = parser.parse_args()
 
 base_dir = args.base_dir
@@ -38,7 +38,6 @@ sdo_converted_path = args.converted_path
 
 saturation_limit = 5
 lambda_zo = args.lambda_zo
-lambda_so = args.lambda_so
 
 batch_size = 3 * torch.cuda.device_count()
 
@@ -57,9 +56,14 @@ logging.basicConfig(
 device = torch.device('cuda' if (torch.cuda.is_available()) else 'cpu')
 
 temperature_response = pd.read_csv(temperate_response_path).to_numpy()
+# select smaller temperature range
+t_filter = (temperature_response[:, 0] >= 5.7) & (temperature_response[:, 0] <= 7.4)#(temperature_response[:, 0] >= 5.5) & (temperature_response[:, 0] <= 7.4)
+temperature_response = temperature_response[t_filter]
+
 channel_response = temperature_response[:, 1:]
 channel_response = np.delete(channel_response, 5, 1)  # remove 304
 k = torch.from_numpy(channel_response).float()
+k[k < 0] = 0 # adjust invalid values
 
 temperatures = 10 ** torch.tensor(temperature_response[:, 0], dtype=torch.float32).to(device)
 
@@ -74,11 +78,12 @@ sdo_valid_dataset = DEMDataset(sdo_path, patch_shape=(1024, 1024), months=[11, 1
 sdo_valid_dataset = StorageDataset(sdo_valid_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
 
 normalization = torch.from_numpy(np.array([norm.vmax for norm in sdo_norms.values()])).float()
-zero_weighting = -k.sum(1).to(device)
+zero_weighting = -torch.log10(k.sum(1)).to(device)
 zero_weighting = (zero_weighting - zero_weighting.min()) / (zero_weighting.max() - zero_weighting.min())
+
 # plot weighting
 plt.figure(figsize=(4, 2))
-plt.plot(10 ** np.arange(4, 9.01, 0.05), zero_weighting.cpu())
+plt.plot(temperatures.cpu(), zero_weighting.cpu())
 plt.xlim(0, 25e6)
 plt.savefig(os.path.join(prediction_dir, 'zero_weighting.jpg'))
 plt.close()
@@ -88,7 +93,7 @@ logging.info('Model Size: %.03f M' % (sum(p.numel() for p in model.parameters())
 parallel_model = nn.DataParallel(model)
 parallel_model.to(device)
 
-optimizer = optim.Adam(parallel_model.parameters(), lr=1e-4)
+optimizer = optim.Adam(parallel_model.parameters(), lr=1e-5)
 
 #
 sdo_train_loader = DataLoader(sdo_train_dataset, batch_size=batch_size, num_workers=4, shuffle=True)
@@ -96,7 +101,7 @@ sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=batch_size, num_work
 
 sdo_plot_dataset = DEMDataset(sdo_path, patch_shape=(1024, 1024), months=[11, 12], n_samples=8)
 sdo_plot_dataset = StorageDataset(sdo_plot_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
-plot_callback = PlotCallback(sdo_plot_dataset, parallel_model, prediction_dir, saturation_limit, device)
+plot_callback = PlotCallback(sdo_plot_dataset, parallel_model, prediction_dir, temperatures.cpu().numpy(), saturation_limit, device)
 
 
 start_epoch = 0
@@ -114,15 +119,15 @@ plot_callback(-1)
 epochs = int(1e6)
 
 channel_weighting = torch.tensor([5, 1, 0.5, 0.5, 0.5, 5], dtype=torch.float32).view(1, 6, 1, 1).to(device)
-stretch_div = torch.arcsinh(torch.tensor(1 / 0.01))
+stretch_div = torch.arcsinh(torch.tensor(1 / 0.005))
 
 def weigted_mse(reconstructed_image, sdo_image):
     saturation_mask = torch.min(sdo_image < saturation_limit, dim=1, keepdim=True)[0]
     reconstructed_image = (reconstructed_image + 1) / 2 # scale to [0, 1]
     sdo_image = (sdo_image + 1) / 2 # scale to [0, 1]
     #
-    reconstructed_image = torch.true_divide(torch.arcsinh(reconstructed_image / 0.01), stretch_div)  # stretch
-    sdo_image = torch.true_divide(torch.arcsinh(sdo_image / 0.01), stretch_div)  # stretch
+    reconstructed_image = torch.true_divide(torch.arcsinh(reconstructed_image / 0.005), stretch_div)  # stretch
+    sdo_image = torch.true_divide(torch.arcsinh(sdo_image / 0.005), stretch_div)  # stretch
     #
     loss = ((reconstructed_image - sdo_image) ** 2 * channel_weighting * saturation_mask).mean()
     return loss
@@ -140,19 +145,15 @@ def percentage_diff(reconstructed_image, sdo_image):
 for epoch in range(start_epoch, epochs):
     parallel_model.train()
     train_loss = []
-    so_reg = []
     zo_reg = []
     for iteration, sdo_image in enumerate(tqdm(sdo_train_loader, desc='Train')):
         sdo_image = sdo_image.to(device)
         optimizer.zero_grad()
-        reconstructed_image, log_dem = parallel_model(sdo_image)
-        n_dem = 10 ** (log_dem - 20)
+        reconstructed_image, dem = parallel_model(sdo_image)
 
         loss = weigted_mse(reconstructed_image, sdo_image)
         spacing = [temperatures]
-        second_order_regularization = torch.gradient(torch.gradient(log_dem, dim=1, spacing=spacing)[0], dim=1, spacing=spacing)[0].pow(2).mean()
-        clipped_dem = torch.clip(log_dem, min=0)
-        zeroth_order_regularization = torch.sum(clipped_dem ** 2 * zero_weighting[None, :, None, None], dim=1).pow(0.5).mean()
+        zeroth_order_regularization = torch.sum(dem / 1e23 * zero_weighting[None, :, None, None], dim=1).mean()
 
         total_loss = loss + zeroth_order_regularization * lambda_zo
         assert not torch.isnan(total_loss)
@@ -160,7 +161,6 @@ for epoch in range(start_epoch, epochs):
         torch.nn.utils.clip_grad_norm_(parallel_model.parameters(), 0.1)
         optimizer.step()
         train_loss.append(loss.detach().cpu().numpy())
-        so_reg.append(second_order_regularization.detach().cpu().numpy())
         zo_reg.append(zeroth_order_regularization.detach().cpu().numpy())
     #
     valid_loss = []
@@ -169,7 +169,7 @@ for epoch in range(start_epoch, epochs):
     with torch.no_grad():
         for sdo_image in tqdm(sdo_valid_loader, desc='Valid'):
             sdo_image = sdo_image.float().to(device)
-            reconstructed_image, log_dem = parallel_model(sdo_image)
+            reconstructed_image, dem = parallel_model(sdo_image)
             loss = weigted_mse(reconstructed_image, sdo_image)
             percentage = percentage_diff(reconstructed_image, sdo_image)
             valid_loss.append(loss.detach().cpu().numpy())
@@ -178,7 +178,6 @@ for epoch in range(start_epoch, epochs):
     history['epoch'].append(epoch)
     history['train_loss'].append(np.mean(train_loss))
     history['valid_loss'].append(np.mean(valid_loss))
-    history['so_reg'].append(np.mean(so_reg))
     history['zo_reg'].append(np.mean(zo_reg))
     # Plot
     fig, axs = plt.subplots(3, 1, figsize=(6, 4))
@@ -186,10 +185,8 @@ for epoch in range(start_epoch, epochs):
     axs[0].plot(history['epoch'], history['valid_loss'], 'o-', label='valid loss')
     axs[0].set_ylim(None, min(max(history['valid_loss']), 1))
     axs[0].legend()
-    axs[1].plot(history['epoch'], history['so_reg'], 'o-', label='second order regularization')
+    axs[1].plot(history['epoch'], history['zo_reg'], 'o-', label='zeroth order regularization')
     axs[1].legend()
-    axs[2].plot(history['epoch'], history['zo_reg'], 'o-', label='zeroth order regularization')
-    axs[2].legend()
     plt.tight_layout()
     fig.savefig(os.path.join(base_dir, 'history.jpg'))
     plt.close(fig)
@@ -197,9 +194,9 @@ for epoch in range(start_epoch, epochs):
     plot_callback(epoch)
     # Logging
     logging.info(
-        'EPOCH %04d/%04d [loss %.06f second-reg %.06f zero-reg %.06f] [valid loss %.06f] '
+        'EPOCH %04d/%04d [loss %.06f zero-reg %.06f] [valid loss %.06f] '
         '[channels 94: %.01f; 131: %.01f; 171: %.01f; 193: %.01f; 211: %.01f; 335: %.01f]' %
-        (epoch + 1, epochs, np.mean(train_loss), np.mean(so_reg), np.mean(zo_reg), np.mean(valid_loss), *np.mean(valid_percentage, 0)))
+        (epoch + 1, epochs, np.mean(train_loss), np.mean(zo_reg), np.mean(valid_loss), *np.mean(valid_percentage, 0)))
     # Save
     torch.save({'m': model.state_dict(), 'o': optimizer.state_dict(),
                 'epoch': epoch, 'history': history}, checkpoint_path)

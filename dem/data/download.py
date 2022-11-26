@@ -10,7 +10,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--download_dir', type=str, required=True)
 parser.add_argument('--email', type=str, required=True)
 parser.add_argument('--t_start', type=str, required=True)
-parser.add_argument('--t_end', type=str, required=False, default=None)
+parser.add_argument('--duration', type=str, required=False, default=None)
+parser.add_argument('--cadence', type=str, required=False, default='12s')
 args = parser.parse_args()
 
 download_dir = args.download_dir
@@ -18,10 +19,8 @@ wls = ['94', '131', '171', '193', '211', '335']
 [os.makedirs(os.path.join(download_dir, wl), exist_ok=True) for wl in wls]
 
 client = drms.Client(email=args.email, verbose=True)
-start_date = parse(args.t_start)
-end_date = datetime.now() if args.t_end is None else parse(args.t_end)
-duration = (end_date - start_date) // timedelta(days=1)
-r = client.export('aia.lev1_euv_12s[%s/%dd@30d][%s]{image}' % (start_date.isoformat('T'), duration, ','.join(wls) ))
+start_date = args.t_start
+r = client.export('aia.lev1_euv_12s[%s/%s@%s][%s]{image}' % (start_date, args.duration, args.cadence, ','.join(wls) ))
 r.wait()
 
 

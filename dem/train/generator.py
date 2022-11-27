@@ -5,8 +5,9 @@ from astropy import units as u
 from astropy.visualization import ImageNormalize, LinearStretch
 from iti.data.dataset import StackDataset, get_intersecting_files, BaseDataset
 from iti.data.editor import BrightestPixelPatchEditor, LoadMapEditor, AIAPrepEditor, \
-    MapToDataEditor, NormalizeEditor, LambdaEditor, ExpandDimsEditor, Editor
-from sunpy.map import Map
+    MapToDataEditor, NormalizeEditor, LambdaEditor, ExpandDimsEditor, Editor, get_auto_calibration_table, \
+    get_local_correction_table
+from sunpy.map import Map, contains_full_disk
 
 sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
              131: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
@@ -18,13 +19,19 @@ sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=
 
 
 class PrepEditor(Editor):
-    def __init__(self, **kwargs):
+    def __init__(self, skip_register=False, **kwargs):
         super().__init__(**kwargs)
+        self.skip_register = skip_register
+        self.table = get_local_correction_table()
 
     def call(self, s_map, **kwargs):
-        s_map = register(s_map)
-        s_map = correct_degradation(s_map)
+        s_map = correct_degradation(s_map, correction_table=self.table)
         s_map = normalize_exposure(s_map)
+
+        if self.skip_register:
+            return s_map
+
+        s_map = register(s_map)
         # pad if required
         pad_x = 4096 - s_map.data.shape[1]
         pad_y = 4096 - s_map.data.shape[0]
@@ -36,11 +43,11 @@ class PrepEditor(Editor):
 
 class LinearAIADataset(BaseDataset):
 
-    def __init__(self, data, wavelength, ext='.fits', **kwargs):
+    def __init__(self, data, wavelength, skip_register=False, ext='.fits', **kwargs):
         norm = sdo_norms[wavelength]
 
         editors = [LoadMapEditor(),
-                   PrepEditor(),
+                   PrepEditor(skip_register),
                    MapToDataEditor(),
                    NormalizeEditor(norm),
                    ExpandDimsEditor(),
@@ -48,19 +55,19 @@ class LinearAIADataset(BaseDataset):
         super().__init__(data, editors=editors, ext=ext, **kwargs)
 
 
-class DEMDataset(StackDataset):
+class AIADEMDataset(StackDataset):
 
-    def __init__(self, data, patch_shape=None, ext='.fits', **kwargs):
+    def __init__(self, data, patch_shape=None, skip_register=False, ext='.fits', **kwargs):
         if isinstance(data, list):
             paths = data
         else:
             paths = get_intersecting_files(data, ['94', '131', '171', '193', '211', '335'], ext=ext, **kwargs)
-        data_sets = [LinearAIADataset(paths[0], 94),
-                     LinearAIADataset(paths[1], 131),
-                     LinearAIADataset(paths[2], 171),
-                     LinearAIADataset(paths[3], 193),
-                     LinearAIADataset(paths[4], 211),
-                     LinearAIADataset(paths[5], 335)
+        data_sets = [LinearAIADataset(paths[0], 94, skip_register=skip_register),
+                     LinearAIADataset(paths[1], 131, skip_register=skip_register),
+                     LinearAIADataset(paths[2], 171, skip_register=skip_register),
+                     LinearAIADataset(paths[3], 193, skip_register=skip_register),
+                     LinearAIADataset(paths[4], 211, skip_register=skip_register),
+                     LinearAIADataset(paths[5], 335, skip_register=skip_register)
                      ]
         super().__init__(data_sets, **kwargs)
         if patch_shape is not None:

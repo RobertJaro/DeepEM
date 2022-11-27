@@ -11,7 +11,7 @@ from skimage.measure import block_reduce
 from sunpy.map import Map
 
 from dem.train.callback import sdo_cmaps
-from dem.train.generator import prep_aia_map, DEMDataset
+from dem.train.generator import prep_aia_map, AIADEMDataset
 from dem.train.model import DeepEM
 
 base_path = '/gpfs/gpfs0/robert.jarolim/dem/version12'

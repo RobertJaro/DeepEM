@@ -104,10 +104,10 @@ class DeepEM:
                     dem += [d.cpu()]
                 reconstruction, dem = torch.cat(reconstruction), torch.cat(dem)
                 # reconstruction uncertainty
-                reconstruction_uncertainty = torch.std(reconstruction, dim=0)
+                reconstruction_uncertainty = torch.std(reconstruction, dim=0).cpu().numpy()
                 # dem + uncertainty
-                dem_uncertainty = torch.std(dem, dim=0)
-                dem = torch.mean(dem, dim=0)
+                dem_uncertainty = torch.std(dem, dim=0).cpu().numpy()
+                dem = torch.mean(dem, dim=0).cpu().numpy()
                 # calculate reference reconstruction
                 self.model.eval()
                 reconstruction, _ = self.model(image, log_T)

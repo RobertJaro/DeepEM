@@ -15,7 +15,7 @@ from sunpy.map import Map
 from torch.utils.data import DataLoader
 
 from dem.train.callback import sdo_cmaps
-from dem.train.generator import prep_aia_map, DEMDataset, FITSDataset, FITSDEMDataset
+from dem.train.generator import prep_aia_map, AIADEMDataset, FITSDataset, FITSDEMDataset
 from dem.train.model import DeepEM
 
 base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version1'
@@ -87,12 +87,22 @@ for idx, (image, ref_map) in enumerate(zip(loader, s_maps)):
   plt.close()
   # save dem
   t_mask = 10 ** logT <= 20e6
-  for temp, dem_bin in zip(logT[t_mask], dem[t_mask]):
+  for temp, dem_bin, dem_uc in zip(logT[t_mask], dem[t_mask], dem_uncertainty[t_mask]):
       date_str = ref_map.date.to_datetime().isoformat('T')
       meta_info = {'DATE-OBS': date_str, 'TEMPERATURE': temp}
+      # save fits
       fp = os.path.join(fits_path, '%s_TEMP%.02f.fits' % (date_str, temp))
-
       hdu = fits.PrimaryHDU(dem_bin)
+      for i, v in meta_info.items():
+        hdu.header[i] = v
+      hdul = fits.HDUList([hdu])
+      hdul.writeto(fp, overwrite=True)
+      with open(fp, 'rb') as f_in, gzip.open(fp + '.gz', 'wb') as f_out:
+        f_out.writelines(f_in)
+      os.remove(fp)
+      # save uncertainty
+      fp = os.path.join(fits_path, '%s_TEMP%.02f_error.fits' % (date_str, temp))
+      hdu = fits.PrimaryHDU(dem_uc)
       for i, v in meta_info.items():
         hdu.header[i] = v
       hdul = fits.HDUList([hdu])

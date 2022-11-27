@@ -10,7 +10,7 @@ from torch.nn import MSELoss
 from tqdm import tqdm
 
 from dem.train.callback import PlotCallback
-from dem.train.generator import DEMDataset, sdo_norms
+from dem.train.generator import AIADEMDataset, sdo_norms
 from dem.train.model import DeepEMModel
 
 import torch
@@ -71,10 +71,10 @@ l_editor = LambdaEditor(lambda d: np.clip(d, a_min=-1, a_max=10, dtype=np.float3
 train_patch_editor = BrightestPixelPatchEditor((128, 128), random_selection=0.5)
 valid_patch_editor = BrightestPixelPatchEditor((128, 128), random_selection=0)
 
-sdo_train_dataset = DEMDataset(sdo_path, patch_shape=(1024, 1024), months=list(range(11)))
+sdo_train_dataset = AIADEMDataset(sdo_path, patch_shape=(1024, 1024), months=[1, 2, 3, 4, 8, 9, 10, 11, 12])
 sdo_train_dataset = StorageDataset(sdo_train_dataset, sdo_converted_path, ext_editors=[train_patch_editor, l_editor])
 
-sdo_valid_dataset = DEMDataset(sdo_path, patch_shape=(1024, 1024), months=[11, 12])
+sdo_valid_dataset = AIADEMDataset(sdo_path, patch_shape=(1024, 1024), months=[5, 7])
 sdo_valid_dataset = StorageDataset(sdo_valid_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
 
 normalization = torch.from_numpy(np.array([norm.vmax for norm in sdo_norms.values()])).float()
@@ -99,7 +99,7 @@ optimizer = optim.Adam(parallel_model.parameters(), lr=1e-5)
 sdo_train_loader = DataLoader(sdo_train_dataset, batch_size=batch_size, num_workers=4, shuffle=True)
 sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=batch_size, num_workers=4)
 
-sdo_plot_dataset = DEMDataset(sdo_path, patch_shape=(1024, 1024), months=[11, 12], n_samples=8)
+sdo_plot_dataset = AIADEMDataset(sdo_path, patch_shape=(1024, 1024), months=[5, 7], n_samples=8)
 sdo_plot_dataset = StorageDataset(sdo_plot_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
 plot_callback = PlotCallback(sdo_plot_dataset, parallel_model, prediction_dir, temperatures.cpu().numpy(), saturation_limit, device)
 
@@ -116,9 +116,9 @@ if os.path.exists(checkpoint_path):
 # history = {'epoch': [], 'train_loss': [], 'valid_loss': [], 'so_reg':[], 'zo_reg':[]}
 plot_callback(-1)
 # Start training
-epochs = int(1e6)
+epochs = 1000
 
-channel_weighting = torch.tensor([5, 1, 0.5, 0.5, 0.5, 5], dtype=torch.float32).view(1, 6, 1, 1).to(device)
+channel_weighting = torch.tensor([5, 1, 1, 0.5, 0.5, 5], dtype=torch.float32).view(1, 6, 1, 1).to(device)
 stretch_div = torch.arcsinh(torch.tensor(1 / 0.005))
 
 def weigted_mse(reconstructed_image, sdo_image):

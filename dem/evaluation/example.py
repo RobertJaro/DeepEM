@@ -8,7 +8,7 @@ from astropy.visualization import ImageNormalize, AsinhStretch
 
 from dem.train.callback import sdo_cmaps
 from dem.train.generator import FITSDEMDataset
-from dem.train.model import DeepEM
+from dem.train.model import DEM
 
 evaluation_path = '/gpfs/gpfs0/robert.jarolim/dem/examples'
 os.makedirs(evaluation_path, exist_ok=True)
@@ -21,7 +21,7 @@ for c_img, cmap in zip(image, sdo_cmaps):
     plt.imsave(f'{evaluation_path}/{cmap.name}.jpg', norm(c_img), cmap=cmap, origin='lower', vmin=0, vmax=1, )
 
 base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version1'
-dem_model = DeepEM(model_path=os.path.join(base_path, 'model.pt'))
+dem_model = DEM(model_path=os.path.join(base_path, 'model.pt'))
 
 result = dem_model.compute(image, uncertainty=True)
 dem = result['dem']

@@ -11,16 +11,16 @@ from torch.utils.data import DataLoader
 
 from dem.train.callback import sdo_cmaps
 from dem.train.generator import FITSDEMDataset
-from dem.train.model import DeepEM
+from dem.train.model import DEM
 
-base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version1'
+base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_fc_version1'
 evaluation_path = os.path.join(base_path, 'evaluation_sim')
 fits_path = os.path.join(base_path, 'fits_sim')
 
 os.makedirs(evaluation_path, exist_ok=True)
 os.makedirs(fits_path, exist_ok=True)
 
-dem_model = DeepEM(model_path=os.path.join(base_path, 'model.pt'))
+dem_model = DEM(model_path=os.path.join(base_path, 'model.pt'))
 logT = dem_model.log_T
 T = 10 ** logT
 

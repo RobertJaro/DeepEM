@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 
 from dem.train.callback import sdo_cmaps
 from dem.train.generator import prep_aia_map, AIADEMDataset, FITSDataset, FITSDEMDataset
-from dem.train.model import DeepEM
+from dem.train.model import DEM
 
 base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version1'
 data_dir = '/gpfs/gpfs0/robert.jarolim/data/dem_test_prep'
@@ -28,7 +28,7 @@ os.makedirs(fits_path, exist_ok=True)
 
 wls = ['94', '131', '171', '193', '211', '335']
 
-dem_model = DeepEM(model_path=os.path.join(base_path, 'model.pt'))
+dem_model = DEM(model_path=os.path.join(base_path, 'model.pt'))
 logT = dem_model.log_T
 
 ds = FITSDEMDataset(data_dir, )

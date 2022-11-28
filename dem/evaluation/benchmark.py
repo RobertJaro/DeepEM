@@ -7,14 +7,15 @@ import numpy as np
 from astropy.visualization import ImageNormalize, AsinhStretch, LogStretch
 from dateutil.parser import parse
 from matplotlib import pyplot as plt
+from matplotlib.dates import DateFormatter
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from torch.utils.data import DataLoader
 
 from dem.train.callback import sdo_cmaps
 from dem.train.generator import AIADEMDataset
-from dem.train.model import DeepEM
+from dem.train.model import DEM
 
-base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version1'
+base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version4'
 data_dir = '/gpfs/gpfs0/robert.jarolim/data/dem_event'
 evaluation_path = os.path.join(base_path, 'benchmark')
 benchmarking_mode = True
@@ -23,7 +24,7 @@ os.makedirs(evaluation_path, exist_ok=True)
 
 wls = ['94', '131', '171', '193', '211', '335']
 
-dem_model = DeepEM(model_path=os.path.join(base_path, 'model.pt'))
+dem_model = DEM(model_path=os.path.join(base_path, 'model.pt'))
 logT = dem_model.log_T
 T = 10 ** logT
 
@@ -33,6 +34,8 @@ ds = AIADEMDataset(data_dir, skip_register=True)
 loader = DataLoader(ds, batch_size=None, num_workers=4)
 dates = [parse(os.path.basename(f)[:-5]).isoformat(' ') for f in sorted(glob.glob('/gpfs/gpfs0/robert.jarolim/data/dem_event/131/*.fits'))]
 
+temperatures = []
+
 start_time = datetime.now()
 for idx, (image, date_str) in enumerate(zip(loader, dates)):
     image = image.detach().numpy()
@@ -40,7 +43,7 @@ for idx, (image, date_str) in enumerate(zip(loader, dates)):
     #
     if benchmarking_mode:
         print('Computing time:', dem_result['computing_time'])
-        continue
+        # continue
     #
     dem = dem_result['dem']
     dem_uncertainty = dem_result['dem_uncertainty'] if 'dem_uncertainty' in dem_result else np.zeros_like(dem)
@@ -87,5 +90,18 @@ for idx, (image, date_str) in enumerate(zip(loader, dates)):
     fig.savefig(os.path.join(evaluation_path, f'%03d.jpg' % idx), dpi=300)
     plt.close(fig)
 
+    mean_T = (dem * T[:, None, None] * np.gradient(T[:, None, None], axis=0)).sum(0) / (
+                (dem * np.gradient(T[:, None, None], axis=0)).sum(0) + 1e-6)
+    temperatures += [mean_T.mean()]
+
 print('Total computing time:', datetime.now() - start_time)
 shutil.make_archive(evaluation_path, 'zip', evaluation_path)
+
+plt.figure(figsize=(12, 3))
+plt.plot([parse(d) for d in dates], np.array(temperatures) * 1e-6, '-x', mec='red', ms=4)
+plt.xlabel('Time')
+plt.ylabel('Temperature [MK]')
+plt.gca().xaxis.set_major_formatter(DateFormatter("%H:%M"))
+plt.tight_layout()
+plt.savefig(os.path.join(evaluation_path, 'temperature_series.jpg'))
+plt.close()

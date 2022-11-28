@@ -10,4 +10,4 @@
 
 module load python/pytorch-1.6.0
 cd /beegfs/home/robert.jarolim/projects/DEM
-python3 -i -m dem.train.train --base_dir /gpfs/gpfs0/robert.jarolim/dem/uc_version1 --lambda_zo 0.01 --temperature_response /gpfs/gpfs0/robert.jarolim/data/dem/aia_temperature_response_2013.csv --data_path /gpfs/gpfs0/robert.jarolim/data/dem --converted_path /gpfs/gpfs0/robert.jarolim/data/converted/dem_prep
+python3 -i -m dem.train.train --base_dir /gpfs/gpfs0/robert.jarolim/dem/uc_version4 --lambda_zo 0.01 --temperature_response /gpfs/gpfs0/robert.jarolim/data/dem/aia_temperature_response_2013.csv --data_path /gpfs/gpfs0/robert.jarolim/data/dem --converted_path /gpfs/gpfs0/robert.jarolim/data/converted/dem_prep

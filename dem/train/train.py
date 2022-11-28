@@ -1,26 +1,20 @@
 import argparse
 import logging
 import os
-from datetime import datetime
 
+import numpy as np
+import pandas as pd
+import torch
 from iti.data.dataset import StorageDataset
 from iti.data.editor import BrightestPixelPatchEditor, LambdaEditor
+from matplotlib import pyplot as plt
 from torch import optim, nn
-from torch.nn import MSELoss
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dem.train.callback import PlotCallback
 from dem.train.generator import AIADEMDataset, sdo_norms
-from dem.train.model import DeepEMModel
-
-import torch
-from torch.utils.data import DataLoader
-
-from matplotlib import pyplot as plt
-import pandas as pd
-
-import numpy as np
-
+from dem.train.model import DEMModel
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--base_dir', type=str, required=True)
@@ -57,13 +51,14 @@ device = torch.device('cuda' if (torch.cuda.is_available()) else 'cpu')
 
 temperature_response = pd.read_csv(temperate_response_path).to_numpy()
 # select smaller temperature range
-t_filter = (temperature_response[:, 0] >= 5.7) & (temperature_response[:, 0] <= 7.4)#(temperature_response[:, 0] >= 5.5) & (temperature_response[:, 0] <= 7.4)
+t_filter = (temperature_response[:, 0] >= 5.7) & (temperature_response[:,
+                                                  0] <= 7.4)  # (temperature_response[:, 0] >= 5.5) & (temperature_response[:, 0] <= 7.4)
 temperature_response = temperature_response[t_filter]
 
 channel_response = temperature_response[:, 1:]
 channel_response = np.delete(channel_response, 5, 1)  # remove 304
 k = torch.from_numpy(channel_response).float()
-k[k < 0] = 0 # adjust invalid values
+k[k < 0] = 0  # adjust invalid values
 
 temperatures = 10 ** torch.tensor(temperature_response[:, 0], dtype=torch.float32).to(device)
 
@@ -88,7 +83,7 @@ plt.xlim(0, 25e6)
 plt.savefig(os.path.join(prediction_dir, 'zero_weighting.jpg'))
 plt.close()
 # Init Model
-model = DeepEMModel(channel_response.shape[1], 10, temperature_response[:, 0], k, normalization)
+model = DEMModel(channel_response.shape[1], 10, temperature_response[:, 0], k, normalization, n_dims=512)
 logging.info('Model Size: %.03f M' % (sum(p.numel() for p in model.parameters()) / 1e6))
 parallel_model = nn.DataParallel(model)
 parallel_model.to(device)
@@ -101,11 +96,11 @@ sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=batch_size, num_work
 
 sdo_plot_dataset = AIADEMDataset(sdo_path, patch_shape=(1024, 1024), months=[5, 7], n_samples=8)
 sdo_plot_dataset = StorageDataset(sdo_plot_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
-plot_callback = PlotCallback(sdo_plot_dataset, parallel_model, prediction_dir, temperatures.cpu().numpy(), saturation_limit, device)
-
+plot_callback = PlotCallback(sdo_plot_dataset, parallel_model, prediction_dir, temperatures.cpu().numpy(),
+                             saturation_limit, device)
 
 start_epoch = 0
-history = {'epoch': [], 'train_loss': [], 'valid_loss': [], 'so_reg':[], 'zo_reg':[]}
+history = {'epoch': [], 'train_loss': [], 'valid_loss': [], 'so_reg': [], 'zo_reg': []}
 if os.path.exists(checkpoint_path):
     state_dict = torch.load(checkpoint_path)
     model.load_state_dict(state_dict['m'])
@@ -121,10 +116,11 @@ epochs = 1000
 channel_weighting = torch.tensor([5, 1, 1, 0.5, 0.5, 5], dtype=torch.float32).view(1, 6, 1, 1).to(device)
 stretch_div = torch.arcsinh(torch.tensor(1 / 0.005))
 
+
 def weigted_mse(reconstructed_image, sdo_image):
     saturation_mask = torch.min(sdo_image < saturation_limit, dim=1, keepdim=True)[0]
-    reconstructed_image = (reconstructed_image + 1) / 2 # scale to [0, 1]
-    sdo_image = (sdo_image + 1) / 2 # scale to [0, 1]
+    reconstructed_image = (reconstructed_image + 1) / 2  # scale to [0, 1]
+    sdo_image = (sdo_image + 1) / 2  # scale to [0, 1]
     #
     reconstructed_image = torch.true_divide(torch.arcsinh(reconstructed_image / 0.005), stretch_div)  # stretch
     sdo_image = torch.true_divide(torch.arcsinh(sdo_image / 0.005), stretch_div)  # stretch
@@ -132,15 +128,18 @@ def weigted_mse(reconstructed_image, sdo_image):
     loss = ((reconstructed_image - sdo_image) ** 2 * channel_weighting * saturation_mask).mean()
     return loss
 
+
 def percentage_diff(reconstructed_image, sdo_image):
     saturation_mask = torch.min(sdo_image < saturation_limit, dim=1, keepdim=True)[0]
     saturation_mask[saturation_mask == False] = float('nan')
     #
-    reconstructed_image = (reconstructed_image + 1) / 2 # scale to [0, 1]
-    sdo_image = (sdo_image + 1) / 2 # scale to [0, 1]
+    reconstructed_image = (reconstructed_image + 1) / 2  # scale to [0, 1]
+    sdo_image = (sdo_image + 1) / 2  # scale to [0, 1]
     #
-    loss = torch.nanmean(torch.abs(reconstructed_image - sdo_image) * saturation_mask , dim=(0, 2, 3)) / torch.nanmean(sdo_image, dim=(0, 2, 3)) * 100
+    loss = torch.nanmean(torch.abs(reconstructed_image - sdo_image) * saturation_mask, dim=(0, 2, 3)) / torch.nanmean(
+        sdo_image, dim=(0, 2, 3)) * 100
     return loss
+
 
 for epoch in range(start_epoch, epochs):
     parallel_model.train()

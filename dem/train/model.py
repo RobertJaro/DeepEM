@@ -11,9 +11,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 
-class DeepEMModel(nn.Module):
+class DEMModel(nn.Module):
 
-    def __init__(self, channels, n_normal, log_T, k, normalization, scaling_factor=1e28):
+    def __init__(self, channels, n_normal, log_T, k, normalization, n_dims = 512, scaling_factor=1e28):
         super().__init__()
         #
         self.register_buffer("k", k)
@@ -26,14 +26,11 @@ class DeepEMModel(nn.Module):
         self.register_buffer("dT", torch.tensor(np.gradient(T), dtype=torch.float32))
         #
         convs = []
-        convs += [nn.Conv2d(channels, 128, 3, padding=1, padding_mode='reflect'), Sine(), ]
-        convs += [nn.Conv2d(128, 256, 3, padding=1, padding_mode='reflect'), Sine(), nn.Dropout2d(0.25), ]
-        convs += [nn.Conv2d(256, 512, 3, padding=1, padding_mode='reflect'), Sine(), nn.Dropout2d(0.25)]
-        convs += [nn.Conv2d(512, 512, 3, padding=1, padding_mode='reflect'), Sine(), nn.Dropout2d(0.25)]
-        convs += [nn.Conv2d(512, 512, 3, padding=1, padding_mode='reflect'), Sine(), nn.Dropout2d(0.25)]
-        convs += [nn.Conv2d(512, 512, 3, padding=1, padding_mode='reflect'), Sine(), nn.Dropout2d(0.25)]
+        convs += [nn.Conv2d(channels, n_dims, 3, padding=1, padding_mode='reflect'), Sine(), ]
+        for _ in range(4):
+            convs += [nn.Conv2d(n_dims, n_dims, 3, padding=1, padding_mode='reflect'), Sine(), nn.Dropout2d(0.25), ]
         self.convs = nn.Sequential(*convs)
-        self.out = nn.Conv2d(512, n_normal * 3, 3, padding=1, padding_mode='reflect')
+        self.out = nn.Conv2d(n_dims, n_normal * 3, 3, padding=1, padding_mode='reflect')
         #
         self.out_act = nn.Softplus()
 
@@ -80,9 +77,9 @@ class Sine(nn.Module):
         return torch.sin(self.w0 * x)
 
 
-class DeepEM:
+class DEM:
 
-    def __init__(self, model_path=None, model_name='deepem_v0_1.pt', device=None):
+    def __init__(self, model_path=None, model_name='dem_v0_1.pt', device=None):
         device = torch.device('cuda' if (torch.cuda.is_available()) else 'cpu') if not device else device
         self.model = torch.load(model_path, map_location=device) if model_path else \
             torch.load(self._get_model_path(model_name), map_location=device)
@@ -152,6 +149,7 @@ class DeepEM:
         with torch.no_grad():
             for patch in patches:
                 r = self.compute(patch, **kwargs)
+                print(r['computing_time'])
                 del r['computing_time']
                 results += [r]
         #

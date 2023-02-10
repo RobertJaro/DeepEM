@@ -1,20 +1,17 @@
 import numpy as np
 from aiapy.calibrate import register, normalize_exposure, correct_degradation
-from astropy.coordinates import SkyCoord
-from astropy import units as u
 from astropy.visualization import ImageNormalize, LinearStretch
 from iti.data.dataset import StackDataset, get_intersecting_files, BaseDataset
 from iti.data.editor import BrightestPixelPatchEditor, LoadMapEditor, AIAPrepEditor, \
-    MapToDataEditor, NormalizeEditor, LambdaEditor, ExpandDimsEditor, Editor, get_auto_calibration_table, \
-    get_local_correction_table
-from sunpy.map import Map, contains_full_disk
+    MapToDataEditor, NormalizeEditor, LambdaEditor, ExpandDimsEditor, Editor, get_local_correction_table
+from sunpy.map import Map
 
-sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
+sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e3, stretch=LinearStretch(), clip=False),
              131: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
              171: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
              193: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
              211: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
-             335: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
+             335: ImageNormalize(vmin=0, vmax=1e3, stretch=LinearStretch(), clip=False),
              }
 
 
@@ -40,6 +37,7 @@ class PrepEditor(Editor):
                       constant_values=0)
         s_map = Map(data, s_map.meta)
         return s_map
+
 
 class LinearAIADataset(BaseDataset):
 
@@ -73,17 +71,17 @@ class AIADEMDataset(StackDataset):
         if patch_shape is not None:
             self.addEditor(BrightestPixelPatchEditor(patch_shape, random_selection=0))
 
+
 class FITSDataset(BaseDataset):
 
     def __init__(self, data, norm, ext='.fits', **kwargs):
-
-
         editors = [LoadMapEditor(),
                    MapToDataEditor(),
                    NormalizeEditor(norm),
                    ExpandDimsEditor(),
                    LambdaEditor(lambda d, **_: np.clip(d, a_min=-1, a_max=10, dtype=np.float32))]
         super().__init__(data, editors=editors, ext=ext, **kwargs)
+
 
 class FITSDEMDataset(StackDataset):
 

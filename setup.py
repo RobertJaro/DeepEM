@@ -2,7 +2,7 @@ import setuptools
 from setuptools import setup
 
 setup(
-    name='DeepEM',
+    name='DEM',
     version='0.1',
     packages=setuptools.find_packages(),
     url='',

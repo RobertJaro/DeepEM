@@ -15,7 +15,7 @@ from dem.train.callback import sdo_cmaps
 from dem.train.generator import AIADEMDataset
 from dem.train.model import DEM
 
-base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version4'
+base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version6'
 data_dir = '/gpfs/gpfs0/robert.jarolim/data/dem_event'
 evaluation_path = os.path.join(base_path, 'benchmark')
 benchmarking_mode = True

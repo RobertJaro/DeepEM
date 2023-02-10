@@ -8,13 +8,14 @@ from scipy.io import readsav
 from sunpy.coordinates import frames
 from sunpy.map import make_fitswcs_header, Map
 
-data_path = '/Volumes/Extreme SSD/IDL_MAS_2021Eclipse_Cosie_3D_EM.sav'
+data_path = '/Volumes/Extreme SSD/DEM/IDL_MAS_2021Eclipse_Cosie_3D_EM.sav'
+sav = readsav(data_path)
 dem3d_data = readsav(data_path)['dem3d']
 
 out_path = '/Volumes/Extreme SSD/DEM'
 os.makedirs(out_path, exist_ok=True)
 
-norm = ImageNormalize(vmin=0, stretch=AsinhStretch(0.005))
+norm = ImageNormalize(vmin=0, vmax=1e30, stretch=AsinhStretch(0.005))
 
 for i, data in enumerate(dem3d_data):
     prep_file = os.path.join(out_path, 'simulation_T%02d.fits' % i)
@@ -43,3 +44,6 @@ test_map = Map('/Volumes/Extreme SSD/DEM/simulation_T01.fits')
 test_map.plot(norm=norm)
 test_map.draw_limb()
 plt.show()
+
+
+plt.plot(10 ** sav['logT_CEN'], dem3d_data[:, 512:-512, 512:-512].mean((1, 2)))

@@ -8,12 +8,13 @@ import torch
 from astropy.nddata import block_reduce
 from skimage.util import view_as_blocks
 from torch import nn
+from torch.optim import Adam
 from torch.utils.data import DataLoader
 
 
 class DEMModel(nn.Module):
 
-    def __init__(self, channels, n_normal, log_T, k, normalization, n_dims = 512, scaling_factor=1e28):
+    def __init__(self, channels, n_normal, log_T, k, normalization, n_dims = 512, scaling_factor=1e28, saturation_limit=5):
         super().__init__()
         #
         self.register_buffer("k", k)
@@ -59,7 +60,7 @@ class DEMModel(nn.Module):
         x = x.view(x.shape[0], -1, 3, *x.shape[2:])
         # (batch, n_normal, T_bins, w, h)
         # min width of 1 temperature bin
-        std = self.out_act(x[:, :, 0, None, :, :]) + 0.1
+        std = self.out_act(x[:, :, 0, None, :, :]) + 0.05
         mean = torch.sigmoid(x[:, :, 1, None, :, :]) * (self.logT.max() - self.logT.min()) + self.logT.min()
         w = self.out_act(x[:, :, 2, None, :, :])
         logT = logT[None, None, :, None, None]  # (batch, n_normal, T_bins, w, h)
@@ -83,8 +84,11 @@ class DEM:
         device = torch.device('cuda' if (torch.cuda.is_available()) else 'cpu') if not device else device
         self.model = torch.load(model_path, map_location=device) if model_path else \
             torch.load(self._get_model_path(model_name), map_location=device)
+        self.parallel_model = nn.DataParallel(self.model)
+        self.optimizer = Adam(self.parallel_model.parameters(), lr=1e-5)
         self.device = device
         self.log_T = self.model.logT.cpu().numpy()
+        self.lambda_zo = 1e-3
 
     def compute(self, image, log_T=None, bin=None, uncertainty=False, n_uncertainty_ensemble=20):
         with torch.no_grad():
@@ -104,11 +108,12 @@ class DEM:
                 reconstruction_uncertainty = torch.std(reconstruction, dim=0).cpu().numpy()
                 # dem + uncertainty
                 dem_uncertainty = torch.std(dem, dim=0).cpu().numpy()
-                dem = torch.mean(dem, dim=0).cpu().numpy()
+                # dem = torch.mean(dem, dim=0).cpu().numpy()
                 # calculate reference reconstruction
                 self.model.eval()
-                reconstruction, _ = self.model(image, log_T)
+                reconstruction, dem = self.model(image, log_T)
                 reconstruction = reconstruction.cpu().numpy()[0]
+                dem = dem.cpu().numpy()[0]
             else:
                 self.model.eval()
                 reconstruction, dem = self.model(image, log_T)
@@ -137,8 +142,36 @@ class DEM:
             else:
                 yield self.compute(image[0], **kwargs)
 
-    def fit(self, images):
-        raise NotImplementedError('Few-shot learning is not implemented.')
+    def fit(self, image, block_shape=None, batch_size=1, iterations=int(1e3)):
+        #
+        if block_shape:
+            patch_shape = (image.shape[0], *block_shape)
+            patches = view_as_blocks(image, patch_shape)
+            patches = np.reshape(patches, (-1, *patch_shape))
+            train_data = [patches[idx * batch_size: (idx + 1) * batch_size]
+                       for idx in range(np.ceil(len(patches) / batch_size).astype(np.int))]
+        else:
+            train_data = [image]
+        train_data = torch.tensor(train_data, dtype=torch.float32)
+
+        for it in range(iterations):
+            for idx in range(np.ceil(len(train_data) / batch_size).astype(np.int)):
+                batch = train_data[idx * batch_size: (idx + 1) * batch_size].to(self.device)
+                self.train_batch(batch)
+
+    def train_batch(self, sdo_image_batch):
+        self.optimizer.zero_grad()
+        reconstructed_image, dem = self.parallel_model(sdo_image_batch)
+        loss = compute_weigted_loss(reconstructed_image, sdo_image_batch)
+        zeroth_order_regularization = compute_zeroth_regularization(dem, sdo_image_batch)
+        # zeroth_order_regularization = torch.sum(dem / 1e23 * zero_weighting[None, :, None, None] * saturation_mask, dim=1).mean()
+        total_loss = loss + zeroth_order_regularization * self.lambda_zo
+        print(total_loss)
+        assert not torch.isnan(total_loss)
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parallel_model.parameters(), 0.1)
+        self.optimizer.step()
+        return loss.detach().cpu().numpy(), zeroth_order_regularization.detach().cpu().numpy()
 
     def compute_patches(self, img, block_shape, **kwargs):
         start_time = datetime.now()
@@ -173,3 +206,26 @@ class DEM:
         if not os.path.exists(model_path):
             request.urlretrieve('http://kanzelhohe.uni-graz.at/iti/' + model_name, filename=model_path)
         return model_path
+
+
+def compute_weigted_loss(reconstructed_image, sdo_image, saturation_limit=5):
+    stretch_div = torch.arcsinh(torch.tensor(1 / 0.005))
+    #
+    saturation_mask = torch.min(sdo_image < saturation_limit, dim=1, keepdim=True)[0]
+    reconstructed_image = (reconstructed_image + 1) / 2  # scale to [0, 1]
+    sdo_image = (sdo_image + 1) / 2  # scale to [0, 1]
+    #
+    reconstructed_image = torch.true_divide(torch.arcsinh(reconstructed_image / 0.005), stretch_div)  # stretch
+    sdo_image = torch.true_divide(torch.arcsinh(sdo_image / 0.005), stretch_div)  # stretch
+    #
+    loss = ((reconstructed_image - sdo_image) ** 2 * saturation_mask).mean()
+    return loss
+
+def compute_zeroth_regularization(dem, sdo_image, saturation_limit=5):
+    # x = dem
+    # saturation_mask = torch.min(sdo_image < saturation_limit, dim=1)[0][:, None]
+    # x = torch.log10(x) - 20
+    # x = torch.tanh(x) + 1
+    # return torch.mean(x * saturation_mask, dim=1).mean()
+    x = torch.sum(dem / 1e23, dim=1).mean()
+    return x

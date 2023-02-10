@@ -18,7 +18,7 @@ from dem.train.callback import sdo_cmaps
 from dem.train.generator import prep_aia_map, AIADEMDataset, FITSDataset, FITSDEMDataset
 from dem.train.model import DEM
 
-base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version1'
+base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_version7_z005'
 data_dir = '/gpfs/gpfs0/robert.jarolim/data/dem_test_prep'
 evaluation_path = os.path.join(base_path, 'evaluation')
 fits_path = os.path.join(base_path, 'fits')

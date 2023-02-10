@@ -6,15 +6,15 @@ import numpy as np
 import pandas as pd
 import torch
 from iti.data.dataset import StorageDataset
-from iti.data.editor import BrightestPixelPatchEditor, LambdaEditor
+from iti.data.editor import BrightestPixelPatchEditor, LambdaEditor, RandomPatchEditor
 from matplotlib import pyplot as plt
 from torch import optim, nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 from tqdm import tqdm
 
 from dem.train.callback import PlotCallback
 from dem.train.generator import AIADEMDataset, sdo_norms
-from dem.train.model import DEMModel
+from dem.train.model import DEMModel, compute_weigted_loss
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--base_dir', type=str, required=True)
@@ -33,7 +33,9 @@ sdo_converted_path = args.converted_path
 saturation_limit = 5
 lambda_zo = args.lambda_zo
 
-batch_size = 3 * torch.cuda.device_count()
+n_dims = 512
+
+batch_size = 3 * torch.cuda.device_count() if torch.cuda.device_count() > 0 else 1
 
 prediction_dir = os.path.join(base_dir, 'prediction')
 os.makedirs(prediction_dir, exist_ok=True)
@@ -48,6 +50,11 @@ logging.basicConfig(
     ])
 
 device = torch.device('cuda' if (torch.cuda.is_available()) else 'cpu')
+# zo_activation = nn.Softplus()
+def zo_activation(x):
+    x = torch.log10(x) - 20
+    x = torch.tanh(x) + 1
+    return x
 
 temperature_response = pd.read_csv(temperate_response_path).to_numpy()
 # select smaller temperature range
@@ -69,6 +76,13 @@ valid_patch_editor = BrightestPixelPatchEditor((128, 128), random_selection=0)
 sdo_train_dataset = AIADEMDataset(sdo_path, patch_shape=(1024, 1024), months=[1, 2, 3, 4, 8, 9, 10, 11, 12])
 sdo_train_dataset = StorageDataset(sdo_train_dataset, sdo_converted_path, ext_editors=[train_patch_editor, l_editor])
 
+# TODO quick check
+sdo_train_dataset_random = AIADEMDataset(sdo_path, months=[1, 2, 3, 4, 8, 9, 10, 11, 12])
+sdo_train_dataset_random.addEditor(RandomPatchEditor([1024, 1024]))
+sdo_train_dataset_random = StorageDataset(sdo_train_dataset_random, sdo_converted_path + '_random', ext_editors=[RandomPatchEditor([128, 128]), l_editor])
+
+sdo_train_dataset = ConcatDataset([sdo_train_dataset, sdo_train_dataset_random])
+
 sdo_valid_dataset = AIADEMDataset(sdo_path, patch_shape=(1024, 1024), months=[5, 7])
 sdo_valid_dataset = StorageDataset(sdo_valid_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
 
@@ -83,7 +97,7 @@ plt.xlim(0, 25e6)
 plt.savefig(os.path.join(prediction_dir, 'zero_weighting.jpg'))
 plt.close()
 # Init Model
-model = DEMModel(channel_response.shape[1], 10, temperature_response[:, 0], k, normalization, n_dims=512)
+model = DEMModel(channel_response.shape[1], 10, temperature_response[:, 0], k, normalization, n_dims=n_dims, saturation_limit=saturation_limit)
 logging.info('Model Size: %.03f M' % (sum(p.numel() for p in model.parameters()) / 1e6))
 parallel_model = nn.DataParallel(model)
 parallel_model.to(device)
@@ -91,8 +105,8 @@ parallel_model.to(device)
 optimizer = optim.Adam(parallel_model.parameters(), lr=1e-5)
 
 #
-sdo_train_loader = DataLoader(sdo_train_dataset, batch_size=batch_size, num_workers=4, shuffle=True)
-sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=batch_size, num_workers=4)
+sdo_train_loader = DataLoader(sdo_train_dataset, batch_size=batch_size, num_workers=os.cpu_count(), shuffle=True)
+sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=batch_size, num_workers=os.cpu_count() // 2)
 
 sdo_plot_dataset = AIADEMDataset(sdo_path, patch_shape=(1024, 1024), months=[5, 7], n_samples=8)
 sdo_plot_dataset = StorageDataset(sdo_plot_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
@@ -113,20 +127,8 @@ plot_callback(-1)
 # Start training
 epochs = 1000
 
-channel_weighting = torch.tensor([5, 1, 1, 0.5, 0.5, 5], dtype=torch.float32).view(1, 6, 1, 1).to(device)
+# channel_weighting = torch.tensor([5, 1, 1, 0.5, 0.5, 5], dtype=torch.float32).view(1, 6, 1, 1).to(device)
 stretch_div = torch.arcsinh(torch.tensor(1 / 0.005))
-
-
-def weigted_mse(reconstructed_image, sdo_image):
-    saturation_mask = torch.min(sdo_image < saturation_limit, dim=1, keepdim=True)[0]
-    reconstructed_image = (reconstructed_image + 1) / 2  # scale to [0, 1]
-    sdo_image = (sdo_image + 1) / 2  # scale to [0, 1]
-    #
-    reconstructed_image = torch.true_divide(torch.arcsinh(reconstructed_image / 0.005), stretch_div)  # stretch
-    sdo_image = torch.true_divide(torch.arcsinh(sdo_image / 0.005), stretch_div)  # stretch
-    #
-    loss = ((reconstructed_image - sdo_image) ** 2 * channel_weighting * saturation_mask).mean()
-    return loss
 
 
 def percentage_diff(reconstructed_image, sdo_image):
@@ -150,9 +152,11 @@ for epoch in range(start_epoch, epochs):
         optimizer.zero_grad()
         reconstructed_image, dem = parallel_model(sdo_image)
 
-        loss = weigted_mse(reconstructed_image, sdo_image)
-        spacing = [temperatures]
-        zeroth_order_regularization = torch.sum(dem / 1e23 * zero_weighting[None, :, None, None], dim=1).mean()
+        loss = compute_weigted_loss(reconstructed_image, sdo_image)
+        saturation_mask = torch.min(sdo_image < saturation_limit, dim=1)[0][:, None]
+        # clip_mask = dem < 1e23 # only regularize small values - ignore large values
+        # zeroth_order_regularization = torch.sum(dem / 1e23 * saturation_mask, dim=1).mean()
+        zeroth_order_regularization = torch.mean(zo_activation(dem) * saturation_mask, dim=1).mean()
 
         total_loss = loss + zeroth_order_regularization * lambda_zo
         assert not torch.isnan(total_loss)
@@ -169,7 +173,7 @@ for epoch in range(start_epoch, epochs):
         for sdo_image in tqdm(sdo_valid_loader, desc='Valid'):
             sdo_image = sdo_image.float().to(device)
             reconstructed_image, dem = parallel_model(sdo_image)
-            loss = weigted_mse(reconstructed_image, sdo_image)
+            loss = compute_weigted_loss(reconstructed_image, sdo_image)
             percentage = percentage_diff(reconstructed_image, sdo_image)
             valid_loss.append(loss.detach().cpu().numpy())
             valid_percentage.append(percentage.detach().cpu().numpy())

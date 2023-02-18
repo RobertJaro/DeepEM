@@ -1,17 +1,17 @@
 import numpy as np
 from aiapy.calibrate import register, normalize_exposure, correct_degradation
-from astropy.visualization import ImageNormalize, LinearStretch
+from astropy.visualization import ImageNormalize, LinearStretch, AsinhStretch
 from iti.data.dataset import StackDataset, get_intersecting_files, BaseDataset
 from iti.data.editor import BrightestPixelPatchEditor, LoadMapEditor, AIAPrepEditor, \
     MapToDataEditor, NormalizeEditor, LambdaEditor, ExpandDimsEditor, Editor, get_local_correction_table
 from sunpy.map import Map
 
-sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e3, stretch=LinearStretch(), clip=False),
-             131: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
-             171: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
-             193: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
-             211: ImageNormalize(vmin=0, vmax=1e4, stretch=LinearStretch(), clip=False),
-             335: ImageNormalize(vmin=0, vmax=1e3, stretch=LinearStretch(), clip=False),
+sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
+             131: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
+             171: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
+             193: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
+             211: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
+             335: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
              }
 
 

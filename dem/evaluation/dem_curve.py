@@ -12,7 +12,7 @@ from sunpy.map import Map
 
 from dem.train.callback import sdo_cmaps
 from dem.train.generator import prep_aia_map, AIADEMDataset
-from dem.train.model import DEM
+from dem.module import DEMModule
 
 base_path = '/gpfs/gpfs0/robert.jarolim/dem/version12'
 data_dir = '/gpfs/gpfs0/robert.jarolim/data/dem'
@@ -21,7 +21,7 @@ os.makedirs(evaluation_path, exist_ok=True)
 
 wls = ['94', '131', '171', '193', '211', '335']
 
-dem_model = DEM(model_path=os.path.join(base_path, 'model.pt'))
+dem_model = DEMModule(model_path=os.path.join(base_path, 'model.pt'))
 
 # crop and dem
 

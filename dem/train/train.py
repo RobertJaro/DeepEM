@@ -8,13 +8,14 @@ import torch
 from iti.data.dataset import StorageDataset
 from iti.data.editor import BrightestPixelPatchEditor, LambdaEditor, RandomPatchEditor
 from matplotlib import pyplot as plt
-from torch import optim, nn
+from torch import optim
 from torch.utils.data import DataLoader, ConcatDataset
 from tqdm import tqdm
 
 from dem.train.callback import PlotCallback
 from dem.train.generator import AIADEMDataset, sdo_norms
-from dem.train.model import DEMModel, compute_weigted_loss
+from dem.train.model import DEMModel
+from dem.module import DEMModule
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--base_dir', type=str, required=True)
@@ -22,10 +23,11 @@ parser.add_argument('--temperature_response', type=str, required=True)
 parser.add_argument('--data_path', type=str, required=True)
 parser.add_argument('--converted_path', type=str, required=True)
 parser.add_argument('--lambda_zo', type=float, required=True, default=1e-4)
+parser.add_argument('--n_dims', type=int, required=True, default=128)
 args = parser.parse_args()
 
 base_dir = args.base_dir
-temperate_response_path = args.temperature_response
+temperature_response_path = args.temperature_response
 
 sdo_path = args.data_path
 sdo_converted_path = args.converted_path
@@ -33,7 +35,7 @@ sdo_converted_path = args.converted_path
 saturation_limit = 5
 lambda_zo = args.lambda_zo
 
-n_dims = 512
+n_dims = args.n_dims
 
 batch_size = 3 * torch.cuda.device_count() if torch.cuda.device_count() > 0 else 1
 
@@ -49,26 +51,38 @@ logging.basicConfig(
         logging.StreamHandler()
     ])
 
-device = torch.device('cuda' if (torch.cuda.is_available()) else 'cpu')
-# zo_activation = nn.Softplus()
-def zo_activation(x):
-    x = torch.log10(x) - 20
-    x = torch.tanh(x) + 1
-    return x
+# init device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-temperature_response = pd.read_csv(temperate_response_path).to_numpy()
-# select smaller temperature range
-t_filter = (temperature_response[:, 0] >= 5.7) & (temperature_response[:,
-                                                  0] <= 7.4)  # (temperature_response[:, 0] >= 5.5) & (temperature_response[:, 0] <= 7.4)
+# load temperature response
+temperature_response = pd.read_csv(temperature_response_path).to_numpy()
+t_filter = (temperature_response[:, 0] >= 5.7) & (temperature_response[:, 0] <= 7.4)
 temperature_response = temperature_response[t_filter]
-
 channel_response = temperature_response[:, 1:]
 channel_response = np.delete(channel_response, 5, 1)  # remove 304
-k = torch.from_numpy(channel_response).float()
+# interpolate
+temperatures_original = temperature_response[:, 0]
+temperatures = torch.arange(temperatures_original.min(), temperatures_original.max(), 0.01)
+channel_response = [np.interp(temperatures, temperatures_original, channel_response[:, i])
+                    for i in range(channel_response.shape[1])]
+channel_response = np.stack(channel_response, 1)
+
+# init tensors
+k = torch.tensor(channel_response, dtype=torch.float32).to(device)
 k[k < 0] = 0  # adjust invalid values
+logT = torch.tensor(temperatures, dtype=torch.float32).to(device)
+normalization = torch.from_numpy(np.array([norm.vmax for norm in sdo_norms.values()])).float()
 
-temperatures = 10 ** torch.tensor(temperature_response[:, 0], dtype=torch.float32).to(device)
+zero_weighting = -torch.log10(k.sum(1)).to(device)
+zero_weighting = (zero_weighting - zero_weighting.min()) / (zero_weighting.max() - zero_weighting.min())
 
+# init model
+model = DEMModel(channel_response.shape[1], 3, logT, k, normalization, n_dims=n_dims)
+optimizer = optim.Adam(model.parameters(), lr=1e-4)
+dem_trainer = DEMModule(model=model, lambda_zo=lambda_zo)
+logging.info('Model Size: %.03f M' % (sum(p.numel() for p in model.parameters()) / 1e6))
+
+# init datasets
 l_editor = LambdaEditor(lambda d: np.clip(d, a_min=-1, a_max=10, dtype=np.float32))
 train_patch_editor = BrightestPixelPatchEditor((128, 128), random_selection=0.5)
 valid_patch_editor = BrightestPixelPatchEditor((128, 128), random_selection=0)
@@ -79,39 +93,22 @@ sdo_train_dataset = StorageDataset(sdo_train_dataset, sdo_converted_path, ext_ed
 # TODO quick check
 sdo_train_dataset_random = AIADEMDataset(sdo_path, months=[1, 2, 3, 4, 8, 9, 10, 11, 12])
 sdo_train_dataset_random.addEditor(RandomPatchEditor([1024, 1024]))
-sdo_train_dataset_random = StorageDataset(sdo_train_dataset_random, sdo_converted_path + '_random', ext_editors=[RandomPatchEditor([128, 128]), l_editor])
+sdo_train_dataset_random = StorageDataset(sdo_train_dataset_random, sdo_converted_path + '_random',
+                                          ext_editors=[RandomPatchEditor([128, 128]), l_editor])
 
-sdo_train_dataset = ConcatDataset([sdo_train_dataset, sdo_train_dataset_random])
+sdo_train_dataset = ConcatDataset([sdo_train_dataset, sdo_train_dataset_random] * 10) # 10 iterations per epoch
 
 sdo_valid_dataset = AIADEMDataset(sdo_path, patch_shape=(1024, 1024), months=[5, 7])
 sdo_valid_dataset = StorageDataset(sdo_valid_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
 
-normalization = torch.from_numpy(np.array([norm.vmax for norm in sdo_norms.values()])).float()
-zero_weighting = -torch.log10(k.sum(1)).to(device)
-zero_weighting = (zero_weighting - zero_weighting.min()) / (zero_weighting.max() - zero_weighting.min())
-
-# plot weighting
-plt.figure(figsize=(4, 2))
-plt.plot(temperatures.cpu(), zero_weighting.cpu())
-plt.xlim(0, 25e6)
-plt.savefig(os.path.join(prediction_dir, 'zero_weighting.jpg'))
-plt.close()
-# Init Model
-model = DEMModel(channel_response.shape[1], 10, temperature_response[:, 0], k, normalization, n_dims=n_dims, saturation_limit=saturation_limit)
-logging.info('Model Size: %.03f M' % (sum(p.numel() for p in model.parameters()) / 1e6))
-parallel_model = nn.DataParallel(model)
-parallel_model.to(device)
-
-optimizer = optim.Adam(parallel_model.parameters(), lr=1e-5)
-
 #
-sdo_train_loader = DataLoader(sdo_train_dataset, batch_size=batch_size, num_workers=os.cpu_count(), shuffle=True)
-sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=batch_size, num_workers=os.cpu_count() // 2)
+sdo_train_loader = DataLoader(sdo_train_dataset, batch_size=batch_size, num_workers=64, shuffle=True)
+sdo_valid_loader = DataLoader(sdo_valid_dataset, batch_size=batch_size, num_workers=64)
 
 sdo_plot_dataset = AIADEMDataset(sdo_path, patch_shape=(1024, 1024), months=[5, 7], n_samples=8)
 sdo_plot_dataset = StorageDataset(sdo_plot_dataset, sdo_converted_path, ext_editors=[valid_patch_editor, l_editor])
-plot_callback = PlotCallback(sdo_plot_dataset, parallel_model, prediction_dir, temperatures.cpu().numpy(),
-                             saturation_limit, device)
+plot_callback = PlotCallback(sdo_plot_dataset, model, prediction_dir, temperatures.cpu().numpy(), saturation_limit,
+                             device)
 
 start_epoch = 0
 history = {'epoch': [], 'train_loss': [], 'valid_loss': [], 'so_reg': [], 'zo_reg': []}
@@ -138,42 +135,40 @@ def percentage_diff(reconstructed_image, sdo_image):
     reconstructed_image = (reconstructed_image + 1) / 2  # scale to [0, 1]
     sdo_image = (sdo_image + 1) / 2  # scale to [0, 1]
     #
-    loss = torch.nanmean(torch.abs(reconstructed_image - sdo_image) * saturation_mask, dim=(0, 2, 3)) / torch.nanmean(
-        sdo_image, dim=(0, 2, 3)) * 100
+    loss = torch.nanmean(torch.abs(reconstructed_image - sdo_image) * saturation_mask, dim=(2, 3)) / \
+           torch.nanmean(sdo_image, dim=(2, 3)) * 100
+    loss = loss.mean(dim=0)
     return loss
 
 
 for epoch in range(start_epoch, epochs):
-    parallel_model.train()
     train_loss = []
     zo_reg = []
+    dem_trainer.parallel_model.train()
     for iteration, sdo_image in enumerate(tqdm(sdo_train_loader, desc='Train')):
         sdo_image = sdo_image.to(device)
         optimizer.zero_grad()
-        reconstructed_image, dem = parallel_model(sdo_image)
-
-        loss = compute_weigted_loss(reconstructed_image, sdo_image)
-        saturation_mask = torch.min(sdo_image < saturation_limit, dim=1)[0][:, None]
-        # clip_mask = dem < 1e23 # only regularize small values - ignore large values
-        # zeroth_order_regularization = torch.sum(dem / 1e23 * saturation_mask, dim=1).mean()
-        zeroth_order_regularization = torch.mean(zo_activation(dem) * saturation_mask, dim=1).mean()
-
-        total_loss = loss + zeroth_order_regularization * lambda_zo
+        # forward
+        reconstructed_image, dem = dem_trainer.parallel_model(sdo_image)
+        # compute loss
+        reconstruction_loss, regularization = dem_trainer._compute_loss(dem, reconstructed_image, sdo_image)
+        # backward
+        total_loss = reconstruction_loss + regularization * dem_trainer.lambda_zo
         assert not torch.isnan(total_loss)
         total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(parallel_model.parameters(), 0.1)
+        loss, zeroth_order_regularization = reconstruction_loss.detach().cpu().numpy(), regularization.detach().cpu().numpy()
         optimizer.step()
-        train_loss.append(loss.detach().cpu().numpy())
-        zo_reg.append(zeroth_order_regularization.detach().cpu().numpy())
+        train_loss.append(loss)
+        zo_reg.append(zeroth_order_regularization)
     #
     valid_loss = []
     valid_percentage = []
-    parallel_model.eval()
+    dem_trainer.parallel_model.eval()
     with torch.no_grad():
         for sdo_image in tqdm(sdo_valid_loader, desc='Valid'):
             sdo_image = sdo_image.float().to(device)
-            reconstructed_image, dem = parallel_model(sdo_image)
-            loss = compute_weigted_loss(reconstructed_image, sdo_image)
+            reconstructed_image, dem = dem_trainer.parallel_model(sdo_image)
+            loss, zeroth_order_regularization = dem_trainer._compute_loss(dem, reconstructed_image, sdo_image)
             percentage = percentage_diff(reconstructed_image, sdo_image)
             valid_loss.append(loss.detach().cpu().numpy())
             valid_percentage.append(percentage.detach().cpu().numpy())

@@ -10,11 +10,12 @@ from skimage.util import view_as_blocks
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 
 class DEMModule:
 
-    def __init__(self, model_path=None, model=None, model_name='dem_v0_1.pt', device=None, lambda_zo=1e-4):
+    def __init__(self, model_path=None, model=None, model_name='dem_v0_1.pt', device=None, lambda_l1=1e-2, lambda_l2=0, lambda_so=0):
         device = torch.device('cuda' if (torch.cuda.is_available()) else 'cpu') if not device else device
         if model:  # create plain
             model = model
@@ -24,21 +25,23 @@ class DEMModule:
 
         self.parallel_model = nn.DataParallel(model)
         self.device = device
-        self.logT = model.logT.cpu().numpy()
-        self.lambda_zo = lambda_zo
+        self.T = model.T.cpu().numpy()
+        self.lambda_l1 = lambda_l1
+        self.lambda_l2 = lambda_l2
+        self.lambda_so = lambda_so
         self.saturation_limit = 5
 
-    def compute(self, image, log_T=None, bin=None, uncertainty=False, n_uncertainty_ensemble=20):
+    def compute(self, image, T=None, bin=None, uncertainty=False, n_uncertainty_ensemble=20):
         with torch.no_grad():
             start_time = datetime.now()
             image = torch.tensor(image, dtype=torch.float32).to(self.device)
             image = image[None,]  # expand batch dimension
-            log_T = torch.tensor(log_T, dtype=torch.float32).to(self.device) if log_T is not None else None
+            T = torch.tensor(T, dtype=torch.float32).to(self.device) if T is not None else None
             if uncertainty:
                 self.parallel_model.train()
                 reconstruction, dem = [], []
                 for _ in range(n_uncertainty_ensemble):
-                    r, d = self.parallel_model(image, log_T)
+                    r, d = self.parallel_model(image, T)
                     reconstruction += [r.cpu()]
                     dem += [d.cpu()]
                 reconstruction, dem = torch.cat(reconstruction), torch.cat(dem)
@@ -50,14 +53,16 @@ class DEMModule:
                 dem = torch.mean(dem, dim=0).cpu().numpy()
                 # calculate reference reconstruction
                 # self.parallel_model.eval()
-                # reconstruction, dem = self.parallel_model(image, log_T)
+                # reconstruction, dem = self.parallel_model(image, T)
                 # reconstruction = reconstruction.cpu().numpy()[0]
                 # dem = dem.cpu().numpy()[0]
             else:
                 self.parallel_model.eval()
-                reconstruction, dem = self.parallel_model(image, log_T)
+                reconstruction, dem = self.parallel_model(image, T)
                 reconstruction = reconstruction.cpu().numpy()[0]
                 dem = dem.cpu().numpy()[0]
+                dem_uncertainty = np.zeros_like(dem)
+                reconstruction_uncertainty = np.zeros_like(reconstruction)
             if bin:
                 dem = block_reduce(dem, (1, bin, bin), func=np.mean)
                 reconstruction = block_reduce(reconstruction, (1, bin, bin), func=np.mean)
@@ -65,10 +70,9 @@ class DEMModule:
                     dem_uncertainty = block_reduce(dem_uncertainty, (1, bin, bin), func=np.mean)
                     reconstruction_uncertainty = block_reduce(reconstruction_uncertainty, (1, bin, bin), func=np.mean)
             # build result
-            result = {'dem': dem, 'reconstruction': reconstruction, 'computing_time': datetime.now() - start_time}
-            if uncertainty:
-                result.update(
-                    {'dem_uncertainty': dem_uncertainty, 'reconstruction_uncertainty': reconstruction_uncertainty})
+            result = {'dem': dem, 'reconstruction': reconstruction, 'computing_time': datetime.now() - start_time,
+                      'dem_uncertainty': dem_uncertainty, 'reconstruction_uncertainty': reconstruction_uncertainty}
+
             return result
 
     def icompute(self, dataset, num_workers=None, block_shape=(512, 512), **kwargs):
@@ -108,43 +112,50 @@ class DEMModule:
         #
         return d
 
-    def fit_image(self, image, block_shape=None, batch_size=1, epochs=int(1e3)):
+    def fit_images(self, images, block_shape=None, batch_size=1, epochs=int(1e4), show_progress=True):
         #
+        train_data = []
         if block_shape:
-            patch_shape = (image.shape[0], *block_shape)
-            patches = view_as_blocks(image, patch_shape)
-            patches = np.reshape(patches, (-1, *patch_shape))
-            train_data = [patches[idx * batch_size: (idx + 1) * batch_size]
-                          for idx in range(np.ceil(len(patches) / batch_size).astype(np.int))]
+            for image in images:
+                patch_shape = (image.shape[0], *block_shape)
+                patches = view_as_blocks(image, patch_shape)
+                patches = np.reshape(patches, (-1, *patch_shape))
+                train_data += [patches[idx * batch_size: (idx + 1) * batch_size]
+                              for idx in range(np.ceil(len(patches) / batch_size).astype(np.int))]
         else:
-            train_data = [image]
-        train_data = torch.tensor(train_data, dtype=torch.float32)
+            train_data += images
+        train_data = torch.tensor(np.array(train_data), dtype=torch.float32)
 
         optimizer = Adam(self.parallel_model.parameters(), lr=1e-4)
 
         self.parallel_model.train()
-        for epoch in range(epochs):
+        iter = tqdm(range(epochs)) if show_progress else range(epochs)
+        for epoch in iter:
             for idx in range(np.ceil(len(train_data) / batch_size).astype(np.int)):
                 optimizer.zero_grad()
                 batch = train_data[idx * batch_size: (idx + 1) * batch_size].to(self.device)
                 # forward
                 reconstructed_image, dem = self.parallel_model(batch)
                 # compute loss
-                reconstruction_loss, zeroth_order_regularization = self._compute_loss(dem, reconstructed_image, batch)
+                reconstruction_loss, l1_regularization, l2_regularization, so_regularization = self._compute_loss(dem, reconstructed_image, batch)
                 # backward
-                total_loss = reconstruction_loss + zeroth_order_regularization * self.lambda_zo
+                total_loss = reconstruction_loss + l1_regularization * self.lambda_l1 + l2_regularization * self.lambda_l2 + so_regularization * self.lambda_so
                 assert not torch.isnan(total_loss)
                 total_loss.backward()
-                reconstruction_loss.detach().cpu().numpy(), zeroth_order_regularization.detach().cpu().numpy()
                 optimizer.step()
 
     def _compute_loss(self, dem, reconstructed_image, ref_image):
+        ref_image, error = ref_image[:, :6], ref_image[:, 6:]
         lf = nn.HuberLoss(reduction='none')
-        # channel_weight = torch.tensor([100, 10, 1, 1, 1, 20], dtype=torch.float32, device=dem.device)[None, :, None, None]
-        saturation_mask = torch.min(ref_image < self.saturation_limit, dim=1, keepdim=True)[0]
-        reconstruction_loss = (lf(reconstructed_image, ref_image) * saturation_mask).mean()
-        zeroth_order_regularization = torch.mean((dem / 1e23) * saturation_mask)
-        return reconstruction_loss, zeroth_order_regularization
+        saturation_mask = torch.min(ref_image < self.saturation_limit, dim=1)[0].float()[:, None]
+        reconstruction_loss = (lf(reconstructed_image, ref_image) / error * saturation_mask).mean()
+        scaled_dem = dem / 1e22
+        l1_regularization = (scaled_dem * saturation_mask).mean()
+        l2_regularization = (scaled_dem * saturation_mask).pow(2).mean()
+        second_order_regularization = torch.gradient(torch.gradient(scaled_dem, dim=1, edge_order=2)[0], dim=1, edge_order=2)[0].pow(2)
+        second_order_regularization = (second_order_regularization * saturation_mask).mean()
+
+        return reconstruction_loss, l1_regularization, l2_regularization, second_order_regularization
 
     def _get_model_path(self, model_name):
         model_path = os.path.join(Path.home(), '.deepem', model_name)

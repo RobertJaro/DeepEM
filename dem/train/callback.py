@@ -21,14 +21,14 @@ class PlotCallback():
         self.saturation_limit = saturation_limit
 
     def __call__(self, epoch):
-        loader = DataLoader(self.data_set, batch_size=4, shuffle=False, num_workers=8)
+        loader = DataLoader(self.data_set, batch_size=4, shuffle=False, num_workers=4)
         images = []
         reconstructions = []
         dems = []
         with torch.no_grad():
             for image in loader:
                 reconstruction, dem = self.model(image.to(self.device))
-                images.append(image.detach().cpu().numpy())
+                images.append(image[:, :6].detach().cpu().numpy())
                 reconstructions.append(reconstruction.detach().cpu().numpy())
                 dems.append(dem.detach().cpu().numpy())
         images = np.concatenate(images)
@@ -55,7 +55,7 @@ class PlotCallback():
                 ax.imshow(c_dem)
             row = row[n_dem_maps:]
             # row[0].plot(self.temperatures, (10 ** log_dem).sum(axis=(1, 2)))
-            row[0].plot(10 ** self.temperatures, dem.mean(axis=(1, 2)))
+            row[0].plot(self.temperatures, dem.mean(axis=(1, 2)))
             row[0].set_xlim(0, 20e6)
             row[0].set_ylim(0, 2e22)
             row[0].set_axis_on()

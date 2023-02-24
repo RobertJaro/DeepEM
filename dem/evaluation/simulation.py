@@ -13,7 +13,7 @@ from dem.train.callback import sdo_cmaps
 from dem.train.generator import FITSDEMDataset
 from dem.module import DEMModule
 
-base_path = '/gpfs/gpfs0/robert.jarolim/dem/uc_fc_version1'
+base_path = '/gpfs/gpfs0/robert.jarolim/dem/version18_error'
 evaluation_path = os.path.join(base_path, 'evaluation_sim')
 fits_path = os.path.join(base_path, 'fits_sim')
 
@@ -21,8 +21,7 @@ os.makedirs(evaluation_path, exist_ok=True)
 os.makedirs(fits_path, exist_ok=True)
 
 dem_model = DEMModule(model_path=os.path.join(base_path, 'model.pt'))
-logT = dem_model.log_T
-T = 10 ** logT
+T = dem_model.T
 
 ds = FITSDEMDataset([['/gpfs/gpfs0/robert.jarolim/data/dem/simulation_prep/94A_Evenorm.fits'],
                      ['/gpfs/gpfs0/robert.jarolim/data/dem/simulation_prep/131A_Evenorm.fits'],
@@ -33,9 +32,10 @@ ds = FITSDEMDataset([['/gpfs/gpfs0/robert.jarolim/data/dem/simulation_prep/94A_E
 
 # load maps and data
 loader = DataLoader(ds, batch_size=None, num_workers=os.cpu_count())
-for idx, image in enumerate(loader):
-    image = image.detach().numpy()
-    dem_result = dem_model.compute(image, uncertainty=True)
+for idx, input_image in enumerate(loader):
+    input_image = input_image.detach().numpy()
+    image, error = input_image[:6], input_image[6:]
+    dem_result = dem_model.compute_patches(input_image, (512, 512), uncertainty=True)
     dem, reconstruction = dem_result['dem'], dem_result['reconstruction']
     dem_uncertainty = dem_result['dem_uncertainty'] if 'dem_uncertainty' in dem_result else np.zeros_like(dem)
     #
@@ -50,7 +50,7 @@ for idx, image in enumerate(loader):
     print('Computing time:', dem_result['computing_time'])
     #
     plt.figure(figsize=(8, 4))
-    plt.errorbar(10 ** logT, (dem).sum((1, 2)), yerr=dem_uncertainty.sum((1, 2)), ecolor='red', capsize=2)
+    plt.errorbar(T, (dem).sum((1, 2)), yerr=dem_uncertainty.sum((1, 2)), ecolor='red', capsize=2)
     plt.xlim(0, 25e6)
     plt.ylim(0, 5e26)
     plt.xlabel('T')
@@ -84,7 +84,7 @@ for idx, image in enumerate(loader):
     plt.savefig(os.path.join(evaluation_path, f'{idx}_reconstruction.jpg'))
     plt.close()
     # save dem
-    for temp, dem_bin, dem_unc in zip(logT, dem, dem_uncertainty):
+    for temp, dem_bin, dem_unc in zip(T, dem, dem_uncertainty):
         date_str = "2009-02-13"
         meta_info = {'DATE-OBS': date_str, 'TEMPERATURE': temp}
         # save fits

@@ -1,11 +1,10 @@
-import numpy as np
 import torch
 from torch import nn
 
 
 class DEMModel(nn.Module):
 
-    def __init__(self, channels, n_normal, logT, k, normalization, n_dims=512, scaling_factor=1e29):
+    def __init__(self, channels, n_normal, T, k, normalization, n_dims=512, scaling_factor=1e22):
         super().__init__()
         #
         self.register_buffer("k", k)
@@ -13,35 +12,37 @@ class DEMModel(nn.Module):
         self.register_buffer("normalization", normalization)
         self.register_buffer("stretch_div", torch.arcsinh(torch.tensor(1 / 0.005)))
 
-        self.register_buffer("logT", logT)
-        self.register_buffer("dT", torch.gradient(10 ** logT)[0])
-        self.register_buffer("dlogT", torch.gradient(logT)[0])
+        self.register_buffer("T", T)
+        self.register_buffer("dT", torch.gradient(T)[0])
         #
         convs = []
-        convs += [nn.Conv2d(channels, n_dims, 1, padding=0, padding_mode='reflect'), Sine(), ]
+        # channels + error
+        convs += [nn.Conv2d(channels * 2, n_dims, 1, padding=0, padding_mode='reflect'), Sine(), ]
         for _ in range(4):
             convs += [nn.Conv2d(n_dims, n_dims, 1, padding=0, padding_mode='reflect'), Sine(), ]
         # dropout layer
-        convs += [nn.Conv2d(n_dims, n_dims, 1, padding=0, padding_mode='reflect'), Sine(), nn.Dropout2d(0.2), ]
+        convs += [nn.Conv2d(n_dims, n_dims, 1, padding=0, padding_mode='reflect'), Sine(), nn.Dropout2d(0.1), ]
         self.convs = nn.Sequential(*convs)
-        self.out = nn.Conv2d(n_dims, n_normal * 3, 1, padding=0, padding_mode='reflect')
+        self.out = nn.Conv2d(n_dims, 3 * n_normal, 1, padding=0, padding_mode='reflect')
         #
         self.out_act = nn.Softplus()
 
-    def forward(self, x, logT=None):
-        if logT is not None:
-            logT = logT  # default log T
-            dlogT = torch.gradient(logT)[0]
+    def forward(self, x, T=None, return_em = False):
+        if T is not None:
+            T = T  # default log T
+            dT = torch.gradient(T)[0]
         else:
-            logT = self.logT
-            dlogT = self.dlogT
+            T = self.T
+            dT = self.dT
         #
-        dem = self._compute_dem(x, logT)
-        em = dem * dlogT[None, :, None, None]
+        dem = self._compute_dem(x, T)
+        em = dem * dT[None, :, None, None]
         euv_normalized = self.compute_euv(em)
         #
-        dem = em / self.dT[None, :, None, None] * self.scaling_factor  # compute DEM from EM (use correct T bins)
+        dem = dem * self.scaling_factor  # compute DEM from EM (use correct T bins)
         #
+        if return_em:
+            return euv_normalized, dem, em
         return euv_normalized, dem
 
     def compute_euv(self, em):
@@ -52,21 +53,24 @@ class DEMModel(nn.Module):
         # real DEM = EM / [K bin] = dem * dlogT / [K bin]
         return euv_normalized
 
-    def _compute_dem(self, x, logT):
-        dlogT = logT[1] - logT[0]
-        logT = logT[None, None, :, None, None]  # (batch, n_normal, T_bins, w, h)
+    def _compute_dem(self, x, T):
+        # scale to Mm
+        T = T[None, None, :, None, None] * 1e-6  # (batch, n_normal, T_bins, w, h)
         # transform to DEM
         x = self.convs(x)
-        x = self.out(x)
-        x = x.view(x.shape[0], -1, 3, *x.shape[2:])
-        # (batch, n_normal, T_bins, w, h)
+        x = self.out(x) # [0, 2e22]
+        x = x.view(x.shape[0], -1, 3, *x.shape[-2:]) # x (batch, n_normal, 3, w, h)
         # min width of 1 temperature bin
-        std = self.out_act(x[:, :, 0, None, :, :]) * 10 * torch.gradient(logT, dim=2)[0]
-        mean = torch.sigmoid(x[:, :, 1, None, :, :]) * (self.logT.max() - self.logT.min()) + self.logT.min()
+        std = self.out_act(x[:, :, 0, None, :, :]) * (20 - 1) * 1e-2 + 1e-2 # [.01, .2] MK
+        mean = torch.sigmoid(x[:, :, 1, None, :, :]) * (T.max() - T.min()) + T.min()
+        # print(std.min(), std.max())
         # mean = torch.linspace(logT.min() + 0.1, logT.max() - 0.1, x.shape[1], dtype=torch.float32, device=x.device)[None, :, None, None, None]
-        w = self.out_act(x[:, :, 2, None, :, :])
-        normal = w * (std * np.sqrt(2 * np.pi) + 1e-8) ** -1 * torch.exp(-0.5 * (logT - mean) ** 2 / (std ** 2 + 1e-8))
+        w = torch.sigmoid(x[:, :, 2, None, :, :]) # [0, 2]
+        normal = w * torch.exp(-0.5 * ((T - mean) / (std + 1e-8)) ** 2)
         dem = normal.sum(1)
+        # print('1:', mean[0, 0, 0, 0, 0].detach().cpu().numpy(), std[0, 0, 0, 0, 0].detach().cpu().numpy(), w[0, 0, 0, 0, 0].detach().cpu().numpy())
+        # print('2:', mean[0, 1, 0, 0, 0].detach().cpu().numpy(), std[0, 1, 0, 0, 0].detach().cpu().numpy(), w[0, 1, 0, 0, 0].detach().cpu().numpy())
+        # print('3:', mean[0, 2, 0, 0, 0].detach().cpu().numpy(), std[0, 2, 0, 0, 0].detach().cpu().numpy(), w[0, 2, 0, 0, 0].detach().cpu().numpy())
         return dem
 
 

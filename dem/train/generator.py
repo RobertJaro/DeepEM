@@ -1,12 +1,14 @@
 import numpy as np
-from aiapy.calibrate import register, normalize_exposure, correct_degradation
+from aiapy.calibrate import register, normalize_exposure, correct_degradation, estimate_error
 from astropy.visualization import ImageNormalize, LinearStretch, AsinhStretch
 from iti.data.dataset import StackDataset, get_intersecting_files, BaseDataset
 from iti.data.editor import BrightestPixelPatchEditor, LoadMapEditor, AIAPrepEditor, \
     MapToDataEditor, NormalizeEditor, LambdaEditor, ExpandDimsEditor, Editor, get_local_correction_table
 from sunpy.map import Map
 
-sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
+from astropy import units as u
+
+sdo_norms = {94:  ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
              131: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
              171: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
              193: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), clip=False),
@@ -16,14 +18,15 @@ sdo_norms = {94: ImageNormalize(vmin=0, vmax=1e4, stretch=AsinhStretch(0.005), c
 
 
 class PrepEditor(Editor):
-    def __init__(self, skip_register=False, **kwargs):
+    def __init__(self, skip_register=False, normalize_exposure= True, **kwargs):
         super().__init__(**kwargs)
         self.skip_register = skip_register
+        self.normalize_exposure = normalize_exposure
         self.table = get_local_correction_table()
 
     def call(self, s_map, **kwargs):
         s_map = correct_degradation(s_map, correction_table=self.table)
-        s_map = normalize_exposure(s_map)
+        s_map = normalize_exposure(s_map) if self.normalize_exposure else s_map
 
         if self.skip_register:
             return s_map
@@ -38,6 +41,16 @@ class PrepEditor(Editor):
         s_map = Map(data, s_map.meta)
         return s_map
 
+class ErrorEditor(Editor):
+
+    def __init__(self, wavelength, scaling_factor=1e2, **kwargs):
+        super().__init__(**kwargs)
+        self.wavelength = wavelength
+        self.scaling_factor = scaling_factor
+
+    def call(self, data, **kwargs):
+        error = estimate_error(data * (u.ct / u.pix), self.wavelength * u.AA).value
+        return np.nan_to_num(error / self.scaling_factor, nan=1)
 
 class LinearAIADataset(BaseDataset):
 
@@ -52,6 +65,17 @@ class LinearAIADataset(BaseDataset):
                    LambdaEditor(lambda d, **_: np.clip(d, a_min=-1, a_max=10, dtype=np.float32))]
         super().__init__(data, editors=editors, ext=ext, **kwargs)
 
+class ErrorDataset(BaseDataset):
+
+    def __init__(self, data, wavelength, skip_register=False, skip_prep=False, ext='.fits', **kwargs):
+        editors = [LoadMapEditor(),
+                   PrepEditor(skip_register, normalize_exposure=False),
+                   MapToDataEditor(),
+                   ErrorEditor(wavelength),
+                   ExpandDimsEditor(),]
+        if skip_prep:
+            del editors[1]
+        super().__init__(data, editors=editors, ext=ext, **kwargs)
 
 class AIADEMDataset(StackDataset):
 
@@ -65,7 +89,13 @@ class AIADEMDataset(StackDataset):
                      LinearAIADataset(paths[2], 171, skip_register=skip_register),
                      LinearAIADataset(paths[3], 193, skip_register=skip_register),
                      LinearAIADataset(paths[4], 211, skip_register=skip_register),
-                     LinearAIADataset(paths[5], 335, skip_register=skip_register)
+                     LinearAIADataset(paths[5], 335, skip_register=skip_register),
+                     ErrorDataset(paths[0], 94, skip_register=skip_register),
+                     ErrorDataset(paths[1], 131, skip_register=skip_register),
+                     ErrorDataset(paths[2], 171, skip_register=skip_register),
+                     ErrorDataset(paths[3], 193, skip_register=skip_register),
+                     ErrorDataset(paths[4], 211, skip_register=skip_register),
+                     ErrorDataset(paths[5], 335, skip_register=skip_register)
                      ]
         super().__init__(data_sets, **kwargs)
         if patch_shape is not None:
@@ -95,7 +125,13 @@ class FITSDEMDataset(StackDataset):
                      FITSDataset(paths[2], sdo_norms[171]),
                      FITSDataset(paths[3], sdo_norms[193]),
                      FITSDataset(paths[4], sdo_norms[211]),
-                     FITSDataset(paths[5], sdo_norms[335])
+                     FITSDataset(paths[5], sdo_norms[335]),
+                     ErrorDataset(paths[0], 94, skip_prep=True),
+                     ErrorDataset(paths[1], 131, skip_prep=True),
+                     ErrorDataset(paths[2], 171, skip_prep=True),
+                     ErrorDataset(paths[3], 193, skip_prep=True),
+                     ErrorDataset(paths[4], 211, skip_prep=True),
+                     ErrorDataset(paths[5], 335, skip_prep=True)
                      ]
         super().__init__(data_sets, **kwargs)
         if patch_shape is not None:
